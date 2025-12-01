@@ -1,7 +1,29 @@
-__pycache__
-.ipynb_checkpoints
-.vscode
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
-data/dataset
-output
-pretrained
+# Virtual env
+venv/
+.env/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+
+# Data / checkpoints / outputs（依你專案調整）
+data/
+output/
+logs/
+*.pth
+*.pth.tar
+*.pt
+
+# Large temp files
+*.log
+*.tmp
+
