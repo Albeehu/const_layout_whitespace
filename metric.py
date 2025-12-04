@@ -19,7 +19,12 @@ class LayoutFID():
 
         # load pre-trained LayoutNet
         tmpl = './pretrained/layoutnet_{}.pth.tar'
-        state_dict = torch.load(tmpl.format(dataset_name), map_location=device)
+        # 🔹把新 dataset 名稱 map 回原本的權重名稱
+        alias = {
+            "crello_mainpart": "crello",
+        }
+        weight_name = alias.get(dataset_name, dataset_name)
+        state_dict = torch.load(tmpl.format(weight_name), map_location=device)
         self.model.load_state_dict(state_dict)
         self.model.requires_grad_(False)
         self.model.eval()
@@ -128,11 +133,37 @@ def compute_maximum_iou(layouts_1, layouts_2, n_jobs=None):
     c2bl_2 = __get_cond2layouts(layouts_2)
     keys_2 = set(c2bl_2.keys())
     keys = list(keys_1.intersection(keys_2))
+    # 🔍 Debug: 看看有沒有交集
+    print(
+        "[compute_maximum_iou] len(keys_1) =", len(keys_1),
+        "len(keys_2) =", len(keys_2),
+        "len(intersection) =", len(keys),
+    )
+
+    # 👉 完全沒有共同的 condition，直接回 NaN（或你想要的 0.0）
+    if len(keys) == 0:
+        return float("nan")
+
     args = [(c2bl_1[key], c2bl_2[key]) for key in keys]
+
+    # 如果沒指定 n_jobs，就用合理的值
+    if n_jobs is None:
+        n_jobs = min(len(args), mp.cpu_count() or 1)
+
+    if len(args) == 0:
+        return float("nan")
+
     with mp.Pool(n_jobs) as p:
-        scores = p.map(__compute_maximum_iou, args)
-    scores = np.asarray(list(chain.from_iterable(scores)))
-    return scores.mean().item()
+        scores_list = p.map(__compute_maximum_iou, args)
+
+    # 展平成一個 list
+    flat_scores = list(chain.from_iterable(scores_list))
+
+    if len(flat_scores) == 0:
+        return float("nan")
+
+    scores = np.asarray(flat_scores, dtype=np.float32)
+    return float(scores.mean())
 
 
 def compute_overlap(bbox, mask):

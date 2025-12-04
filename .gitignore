@@ -27,3 +27,16 @@ logs/
 *.log
 *.tmp
 
+# YOLO 本地 repo，不要上傳
+yolov8-face/
+
+# 資料集與大壓縮檔，不要上傳
+MagLayout.zip
+crello_v4_train_images/
+crello_v4_validation_images/
+crello_v4_test_images/
+publaynet/
+rico_dataset_v0.1_semantic_annotations.zip
+
+# 依需求決定
+# crello_ws_gt0_6_metrics.csv

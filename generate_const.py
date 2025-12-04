@@ -100,8 +100,8 @@ def main():
     else:
         constraints = clg.const.beautify
 
-    # load test dataset
-    dataset = get_dataset(train_args['dataset'], 'test',
+    # load test dataset 因為沒有test所以改成val
+    dataset = get_dataset(train_args['dataset'], 'val',
                           T.Compose(transforms))
     dataloader = DataLoader(dataset,
                             batch_size=args.batch_size,

@@ -25,7 +25,7 @@ def main():
     parser.add_argument('--name', type=str, default='',
                         help='experiment name')
     parser.add_argument('--dataset', type=str, default='rico',
-                        choices=['rico', 'publaynet', 'magazine'],
+                        choices=['rico', 'publaynet', 'magazine', 'crello', 'crello_mainpart'],
                         help='dataset name')
     parser.add_argument('--batch_size', type=int, default=64,
                         help='batch size')
@@ -99,9 +99,21 @@ def main():
                          num_layers=args.D_num_layers,
                          ).to(device)
 
+
+
     # prepare for evaluation
-    fid_train = LayoutFID(args.dataset, device)
-    fid_val = LayoutFID(args.dataset, device)
+    # fid_train = LayoutFID(args.dataset, device)
+    # fid_val = LayoutFID(args.dataset, device)
+
+    # prepare for evaluation 12/1
+    if args.dataset == "crello_mainpart":
+        # v3 / mainpart 版本：暫時不要用 FID，避免 layoutnet 類別數不匹配
+        fid_train = None
+        fid_val = None
+    else:
+        fid_train = LayoutFID(args.dataset, device)
+        fid_val = LayoutFID(args.dataset, device)
+
 
     fixed_label = None
     val_layouts = [(data.x.numpy(), data.y.numpy()) for data in val_dataset]
@@ -148,6 +160,7 @@ def main():
             loss_D.backward()
             optimizerD.step()
 
+        if fid_train is not None:
             fid_train.collect_features(bbox_fake, label, padding_mask)
             fid_train.collect_features(bbox_real, label, padding_mask,
                                        real=True)
@@ -196,7 +209,13 @@ def main():
 
             iteration += 1
 
-        fid_score_train = fid_train.compute_score()
+        #12/1
+        #fid_score_train = fid_train.compute_score()
+        if fid_train is not None:
+            fid_score_train = fid_train.compute_score()
+        else:
+            fid_score_train = 0.0  # 或者直接給 0，當作 placeholder
+
 
         if epoch != max_epoch - 1:
             if iteration - last_eval < 1e+4:
@@ -217,6 +236,7 @@ def main():
 
                 bbox_fake = netG(z, label, padding_mask)
 
+            if fid_val is not None:
                 fid_val.collect_features(bbox_fake, label, padding_mask)
                 fid_val.collect_features(bbox_real, label, padding_mask,
                                          real=True)
@@ -228,7 +248,13 @@ def main():
                     l = label[j][_mask].cpu().numpy()
                     fake_layouts.append((b, l))
 
-        fid_score_val = fid_val.compute_score()
+        #12/1
+        if fid_val is not None:
+            fid_score_val = fid_val.compute_score()
+        else:
+            fid_score_val = 0.0
+
+        #fid_score_val = fid_val.compute_score()
         max_iou_val = compute_maximum_iou(val_layouts, fake_layouts)
 
         writer.add_scalar('Epoch', epoch, iteration)
