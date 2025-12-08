@@ -35,7 +35,7 @@ class Generator(nn.Module):
 
 class Discriminator(nn.Module):
     def __init__(self, num_label, d_model=512,
-                 nhead=8, num_layers=4, max_bbox=51):
+                 nhead=8, num_layers=4, max_bbox=66):
         super().__init__()
 
         # encoder

@@ -16,6 +16,80 @@ from model.layoutganpp import Generator, Discriminator
 from data.util import LexicographicSort, HorizontalFlip
 from util import init_experiment, save_image, save_checkpoint
 
+#1205
+FACE_ID = 5  # CrelloDataset 裡 face 的 label id
+
+def xywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
+    """
+    boxes: (..., 4) in cx, cy, w, h (0~1)
+    回傳:   (..., 4) in x1, y1, x2, y2
+    """
+    cx, cy, w, h = boxes.unbind(-1)
+    x1 = cx - w / 2.0
+    y1 = cy - h / 2.0
+    x2 = cx + w / 2.0
+    y2 = cy + h / 2.0
+    return torch.stack([x1, y1, x2, y2], dim=-1)
+
+
+def box_iou_xyxy(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
+    """
+    boxes1: (N, 4), boxes2: (M, 4)，x1,y1,x2,y2
+    回傳 IoU: (N, M)
+    """
+    if boxes1.numel() == 0 or boxes2.numel() == 0:
+        return boxes1.new_zeros((boxes1.size(0), boxes2.size(0)))
+
+    lt = torch.max(boxes1[:, None, :2], boxes2[:, :2])  # (N, M, 2)
+    rb = torch.min(boxes1[:, None, 2:], boxes2[:, 2:])  # (N, M, 2)
+    wh = (rb - lt).clamp(min=0)
+    inter = wh[..., 0] * wh[..., 1]
+
+    area1 = ((boxes1[:, 2] - boxes1[:, 0]).clamp(min=0) *
+             (boxes1[:, 3] - boxes1[:, 1]).clamp(min=0))
+    area2 = ((boxes2[:, 2] - boxes2[:, 0]).clamp(min=0) *
+             (boxes2[:, 3] - boxes2[:, 1]).clamp(min=0))
+
+    union = area1[:, None] + area2 - inter
+    return inter / union.clamp(min=1e-6)
+
+
+def face_overlap_loss(pred_boxes_list, face_boxes_list, lambda_face: float = 0.3) -> torch.Tensor:
+    """
+    pred_boxes_list: list[Tensor(N_i, 4)] 或 Tensor(B, N, 4)，cx,cy,w,h 0~1
+    face_boxes_list: list[Tensor(M_i, 4)]，每張圖對應的 GT 人臉 box
+
+    回傳 scalar loss：生成的 box 跟人臉 IoU 越大，loss 越大。
+    """
+    if isinstance(pred_boxes_list, torch.Tensor):
+        # 假設 pred_boxes_list: (B, N, 4)
+        pred_boxes_list = [pb for pb in pred_boxes_list]
+
+    device = pred_boxes_list[0].device
+    total = torch.tensor(0.0, device=device)
+    count = 0
+
+    for pred_boxes, face_boxes in zip(pred_boxes_list, face_boxes_list):
+        if pred_boxes.numel() == 0 or face_boxes.numel() == 0:
+            continue
+
+        pb_xyxy = xywh_to_xyxy(pred_boxes)
+        fb_xyxy = xywh_to_xyxy(face_boxes.to(device))
+
+        ious = box_iou_xyxy(pb_xyxy, fb_xyxy)      # (N, M)
+        max_iou_per_pred, _ = ious.max(dim=1)      # (N,)
+
+        # IoU^2 當懲罰，偏重高 IoU 的情況
+        loss_img = (max_iou_per_pred ** 2).mean()
+
+        total += loss_img
+        count += 1
+
+    if count == 0:
+        return total  # 這個 batch 都沒有臉，loss=0
+
+    return lambda_face * (total / count)
+#1205 end
 
 def main():
     parser = argparse.ArgumentParser(
@@ -25,13 +99,15 @@ def main():
     parser.add_argument('--name', type=str, default='',
                         help='experiment name')
     parser.add_argument('--dataset', type=str, default='rico',
-                        choices=['rico', 'publaynet', 'magazine', 'crello', 'crello_mainpart'],
+                        choices=['rico', 'publaynet', 'magazine', 'crello', 'crello_mainpart', 'crello_mainpart_face'],
                         help='dataset name')
     parser.add_argument('--batch_size', type=int, default=64,
                         help='batch size')
     parser.add_argument('--iteration', type=int, default=int(2e+5),
                         help='number of iterations to train for')
     parser.add_argument('--seed', type=int, help='manual seed')
+
+
 
     # General
     parser.add_argument('--latent_size', type=int, default=4,
@@ -105,9 +181,9 @@ def main():
     # fid_train = LayoutFID(args.dataset, device)
     # fid_val = LayoutFID(args.dataset, device)
 
-    # prepare for evaluation 12/1
-    if args.dataset == "crello_mainpart":
-        # v3 / mainpart 版本：暫時不要用 FID，避免 layoutnet 類別數不匹配
+    # prepare for evaluation 12/8
+    if args.dataset in ("crello_mainpart", "crello_mainpart_face"):
+        # v3 / mainpart / mainpart_face 版本：暫時不要用 FID，避免 layoutnet 類別數不匹配
         fid_train = None
         fid_val = None
     else:
