@@ -133,7 +133,7 @@ def compute_maximum_iou(layouts_1, layouts_2, n_jobs=None):
     c2bl_2 = __get_cond2layouts(layouts_2)
     keys_2 = set(c2bl_2.keys())
     keys = list(keys_1.intersection(keys_2))
-    # 🔍 Debug: 看看有沒有交集
+    # Debug: 看看有沒有交集
     print(
         "[compute_maximum_iou] len(keys_1) =", len(keys_1),
         "len(keys_2) =", len(keys_2),

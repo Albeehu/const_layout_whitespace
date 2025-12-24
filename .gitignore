@@ -16,7 +16,8 @@ venv/
 .vscode/
 
 # Data / checkpoints / outputs（依你專案調整）
-data/
+data/*
+!data/__init__.py
 output/
 logs/
 *.pth

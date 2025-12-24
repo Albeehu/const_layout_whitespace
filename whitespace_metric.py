@@ -173,35 +173,6 @@ def whitespace_metrics_from_mask(
         cx = xs.mean() / float(w)
         cy = ys.mean() / float(h)
 
-    # 4) 基於重心的三種樣式分數
-    #def最大距離（中心到角落）
-    # Dmax = np.sqrt(0.5**2 + 0.5**2)
-
-    # d_center = np.sqrt((cx - 0.5)**2 + (cy - 0.5)**2)
-    #四周留白分數 越小越偏離中間
-    # S_frame = 1.0 - d_center / Dmax
-    # #左右側邊留白分數
-    # d_side = min(
-    #     np.sqrt((cx - 0.0)**2 + (cy - 0.5)**2),
-    #     np.sqrt((cx - 1.0)**2 + (cy - 0.5)**2),
-    # )
-   
-    # S_side = 1.0 - d_side / Dmax
-
-    # d_tb = min(
-    #     np.sqrt((cx - 0.5)**2 + (cy - 0.0)**2),
-    #     np.sqrt((cx - 0.5)**2 + (cy - 1.0)**2),
-    # )
-    #上下留白風格分數
-    # S_tb = 1.0 - d_tb / Dmax
-
-    # clip，避免數值誤差變成小於 0 或大於 1
-    # S_frame = float(np.clip(S_frame, 0.0, 1.0))
-    # S_side  = float(np.clip(S_side, 0.0, 1.0))
-    # S_tb    = float(np.clip(S_tb, 0.0, 1.0))
-
-    # S_pos = max(S_frame, S_side, S_tb)
-
     # Fragmentation penalty: more components -> smaller penalty.
     #碎片懲罰：如果只有 1 塊留白 → penalty = 1
     #元件多 → denominator 變大 → penalty 變小
@@ -313,9 +284,23 @@ def style_scores_from_margins(
     S_side  = float(np.clip(S_side, 0.0, 1.0))
     S_tb    = float(np.clip(S_tb,   0.0, 1.0))
 
+    # 這個當作「主風格」的 summary（保留給 debug / 分析用）
     S_pos = max(S_frame, S_side, S_tb)
 
-    return dict(S_frame=S_frame, S_side=S_side, S_tb=S_tb, S_pos=S_pos)
+    # 新增一個「綜合 style 分數」：三個一起看
+    # corner 留白（side + tb 都大）就會拿到比只大一個更高的分數
+    w_frame = 0.5   # 四周留白也 ok，但不是主角
+    w_side  = 1.0   # 側邊留白加權高一點
+    w_tb    = 1.0   # 上下留白加權高一點
+
+    S_style = (
+        w_frame * S_frame +
+        w_side  * S_side  +
+        w_tb    * S_tb
+    ) / (w_frame + w_side + w_tb)
+
+
+    return dict(S_frame=S_frame, S_side=S_side, S_tb=S_tb, S_pos=S_pos, S_style=S_style,)
 
 
 #輸入bounding boxes，會呼叫layout_to_mask + whitespace_metrics_from_mask
@@ -342,30 +327,46 @@ def whitespace_quality(
     whitespace_mask = 1 - occ_mask  # 1 = whitespace, 0 = content
     #丟給前一個函式算 WR / LWR / DWS / num_cc
     # 2) 先算 WR / LWR / num_cc（連通性部分）
+    #1219 S_side + S_tb一起算
     m = whitespace_metrics_from_mask(whitespace_mask, alpha=alpha)
     wr = m["WR"]
     lwr = m["LWR"]
+    num_cc = m.get("num_cc", 1.0)
 
     # 3) 用內容框算四周邊距 + style 分數
     L, R, T, B = content_margins_from_boxes(boxes)
     style = style_scores_from_margins(L, R, T, B)
 
-    # 4) 用 style 分數更新 DWS：連通性 × 位置style（忽略碎片，因為 num_cc 幾乎都 1）
-    D_conn = lwr / (wr + 1e-8)
-    S_pos = style["S_pos"]
+    # 4) D_conn：最大留白 / 全部留白（留白集中度）
+    if wr > 1e-8:
+        D_conn = lwr / (wr + 1e-8)
+    else:
+        D_conn = 0.0
 
-    m["DWS"] = D_conn * S_pos
+    # 5) 碎片懲罰：留白被切的越多塊，分數越低
+    #    （如果你的 num_cc 幾乎都 1，這項 ≈ 1，不太影響）
+    frag_penalty = 1.0 / (1.0 + alpha * max(0.0, float(num_cc) - 1.0))
 
-    # 5) 把補充資訊也放進 metric dict
+    # 6) style 綜合分數：同時看 frame / side / tb
+    #    corner 留白（側邊 + 上下都大）會讓 S_side 和 S_tb 一起變大 → S_style 特別高
+    S_style = style["S_style"]   # 注意：style_scores_from_margins 要有回傳 S_style
+
+    # 7) 新版 DWS：留白集中度 × 碎片懲罰 × 留白風格分數
+    DWS_new = D_conn * frag_penalty * S_style
+    m["DWS"] = DWS_new
+
+    # 8) 把補充資訊也放進 metric dict，方便你在 CSV 裡看
     m.update(dict(
         L=L, R=R, T=T, B=B,
         S_frame=style["S_frame"],
         S_side=style["S_side"],
         S_tb=style["S_tb"],
-        S_pos=S_pos,
+        S_pos=style["S_pos"],      # 主風格（max），拿來分類用
+        S_style=S_style,           # 綜合 style 分數，用來算 DWS
     ))
 
     return m
+    #1219 end
 
 # -----------------------------
 # I/O helpers (you may need to adapt to your format)
@@ -459,7 +460,7 @@ def save_metrics_to_csv(
         return
     #定義 CSV 欄位名稱
     fieldnames = ["index", "WR", "LWR", "DWS", "num_cc","L", "R", "T", "B",
-    "S_frame", "S_side", "S_tb", "S_pos",]
+    "S_frame", "S_side", "S_tb", "S_pos", "S_style",]
     #開啟檔案（寫入模式、UTF-8），建立一個 DictWriter，先寫表頭
     with output_path.open("w", newline="", encoding="utf-8") as f:
         #DictWriter專門用來把 字典 dict 寫成 CSV
@@ -483,6 +484,7 @@ def save_metrics_to_csv(
                 "S_side":  m.get("S_side", 0.0),
                 "S_tb":    m.get("S_tb", 0.0),
                 "S_pos":   m.get("S_pos", 0.0),
+                "S_style":   m.get("S_style", 0.0),
             }
             #wirte對應的值
             writer.writerow(row)
