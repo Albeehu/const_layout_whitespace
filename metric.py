@@ -1,3 +1,4 @@
+import pickle
 import numpy as np
 import multiprocessing as mp
 from itertools import chain
@@ -140,7 +141,7 @@ def compute_maximum_iou(layouts_1, layouts_2, n_jobs=None):
         "len(intersection) =", len(keys),
     )
 
-    # 👉 完全沒有共同的 condition，直接回 NaN（或你想要的 0.0）
+    #  完全沒有共同的 condition，直接回 NaN（或你想要的 0.0）
     if len(keys) == 0:
         return float("nan")
 
@@ -250,3 +251,77 @@ def compute_violation(bbox_flatten, data):
     valid = to_dense_adj(data.edge_index, data.batch, valid)
 
     return failures.sum((1, 2)) / valid.sum((1, 2))
+
+#新增FaceOcclusion
+class FaceOcclusion():
+    def __init__(self, face_pkl_path, device='cpu'):
+        with open(face_pkl_path, 'rb') as f:
+            self.face_data = pickle.load(f)
+        self.device = device
+        self.all_occlusion_rates = []
+
+    def compute(self, pred_bboxes, index):
+        """
+        pred_bboxes: [N, 4] Tensor (xc, yc, w, h)
+        index: 對應圖片的 index
+        """
+        faces = self.face_data[index]
+        if not faces or pred_bboxes.numel() == 0:
+            return 0.0
+
+        # 1. 手動轉換座標，避開 util.py 可能發生的 unpack 錯誤
+        # 假設 pred_bboxes 是 [N, 4]
+        xc, yc, w, h = pred_bboxes[:, 0], pred_bboxes[:, 1], pred_bboxes[:, 2], pred_bboxes[:, 3]
+        p_x1 = xc - w / 2
+        p_y1 = yc - h / 2
+        p_x2 = xc + w / 2
+        p_y2 = yc + h / 2
+        
+        # [N, 4]
+        pred_ltrb = torch.stack([p_x1, p_y1, p_x2, p_y2], dim=1).detach().cpu()
+        
+        img_occlusions = []
+        for f_box in faces:
+            # f_box [x, y, w, h] (左上角格式)
+            fx1, fy1, fx2, fy2 = f_box[0], f_box[1], f_box[0]+f_box[2], f_box[1]+f_box[3]
+            f_area = f_box[2] * f_box[3]
+            if f_area <= 0: continue
+
+            # 計算交集
+            ix1 = torch.clamp(pred_ltrb[:, 0], min=fx1)
+            iy1 = torch.clamp(pred_ltrb[:, 1], min=fy1)
+            ix2 = torch.clamp(pred_ltrb[:, 2], max=fx2)
+            iy2 = torch.clamp(pred_ltrb[:, 3], max=fy2)
+
+            iw = torch.clamp(ix2 - ix1, min=0)
+            ih = torch.clamp(iy2 - iy1, min=0)
+            inter_area = iw * ih
+            
+            iof = inter_area / f_area
+            
+            # --- 重要修正：檢查 iof 是否為空 ---
+            if iof.numel() > 0:
+                max_iof = torch.max(iof).item()
+            else:
+                max_iof = 0.0
+                
+            img_occlusions.append(max_iof)
+            self.all_occlusion_rates.append(max_iof)
+            
+        return max(img_occlusions) if img_occlusions else 0
+
+    def report(self):
+        """
+        產出論文數據
+        """
+        if not self.all_occlusion_rates:
+            return {"Avg_Occlusion": 0, "Frequency_gt_10": 0}
+        
+        avg_rate = np.mean(self.all_occlusion_rates)
+        # 統計遮擋超過 10% 的嚴重案例比例
+        freq = np.mean([1 if r > 0.1 else 0 for r in self.all_occlusion_rates])
+        
+        return {
+            "Mean_Occlusion_Rate": avg_rate,
+            "Occlusion_Frequency_10": freq
+        }

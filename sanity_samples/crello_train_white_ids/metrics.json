@@ -1,0 +1,316 @@
+{
+  "checkpoint": "/home/albee/const_layout_whitespace/output/crello_mainpart_face/LayoutGAN++/crello_train_white/checkpoint.pth.tar",
+  "dataset": "crello_mainpart_face",
+  "split": "val",
+  "seed": 42,
+  "bbox_format": "cxcywh",
+  "gt_bbox_format": "cxcywh",
+  "face_id": 5,
+  "num_classes": 6,
+  "num_samples": 32,
+  "skip_draw_ids": [
+    3,
+    4
+  ],
+  "skip_overlap_ids": [
+    3,
+    4
+  ],
+  "samples": [
+    {
+      "sample_idx": 0,
+      "png": "sample_00000.png",
+      "num_valid": 11,
+      "num_face": 1,
+      "max_iou_nonface_vs_face": 0.009679282084107399,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 1,
+      "png": "sample_00001.png",
+      "num_valid": 17,
+      "num_face": 1,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 2,
+      "png": "sample_00002.png",
+      "num_valid": 13,
+      "num_face": 0,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 3,
+      "png": "sample_00003.png",
+      "num_valid": 16,
+      "num_face": 3,
+      "max_iou_nonface_vs_face": 0.0041895234026014805,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 4,
+      "png": "sample_00004.png",
+      "num_valid": 8,
+      "num_face": 0,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 5,
+      "png": "sample_00005.png",
+      "num_valid": 19,
+      "num_face": 0,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 6,
+      "png": "sample_00006.png",
+      "num_valid": 16,
+      "num_face": 0,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 7,
+      "png": "sample_00007.png",
+      "num_valid": 6,
+      "num_face": 0,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 8,
+      "png": "sample_00008.png",
+      "num_valid": 7,
+      "num_face": 1,
+      "max_iou_nonface_vs_face": 0.02330450899899006,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 9,
+      "png": "sample_00009.png",
+      "num_valid": 10,
+      "num_face": 0,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 10,
+      "png": "sample_00010.png",
+      "num_valid": 17,
+      "num_face": 2,
+      "max_iou_nonface_vs_face": 0.08108638972043991,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 11,
+      "png": "sample_00011.png",
+      "num_valid": 8,
+      "num_face": 1,
+      "max_iou_nonface_vs_face": 0.042858920991420746,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 12,
+      "png": "sample_00012.png",
+      "num_valid": 10,
+      "num_face": 0,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 13,
+      "png": "sample_00013.png",
+      "num_valid": 14,
+      "num_face": 0,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 14,
+      "png": "sample_00014.png",
+      "num_valid": 15,
+      "num_face": 1,
+      "max_iou_nonface_vs_face": 0.04623541235923767,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 15,
+      "png": "sample_00015.png",
+      "num_valid": 8,
+      "num_face": 0,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 16,
+      "png": "sample_00016.png",
+      "num_valid": 8,
+      "num_face": 0,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 17,
+      "png": "sample_00017.png",
+      "num_valid": 13,
+      "num_face": 0,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 18,
+      "png": "sample_00018.png",
+      "num_valid": 11,
+      "num_face": 0,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 19,
+      "png": "sample_00019.png",
+      "num_valid": 7,
+      "num_face": 0,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 20,
+      "png": "sample_00020.png",
+      "num_valid": 14,
+      "num_face": 1,
+      "max_iou_nonface_vs_face": 0.04127565026283264,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 21,
+      "png": "sample_00021.png",
+      "num_valid": 10,
+      "num_face": 0,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 22,
+      "png": "sample_00022.png",
+      "num_valid": 6,
+      "num_face": 0,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 23,
+      "png": "sample_00023.png",
+      "num_valid": 7,
+      "num_face": 1,
+      "max_iou_nonface_vs_face": 0.16743914783000946,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": true
+    },
+    {
+      "sample_idx": 24,
+      "png": "sample_00024.png",
+      "num_valid": 6,
+      "num_face": 1,
+      "max_iou_nonface_vs_face": 0.01503208838403225,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 25,
+      "png": "sample_00025.png",
+      "num_valid": 15,
+      "num_face": 0,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 26,
+      "png": "sample_00026.png",
+      "num_valid": 12,
+      "num_face": 0,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 27,
+      "png": "sample_00027.png",
+      "num_valid": 12,
+      "num_face": 0,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 28,
+      "png": "sample_00028.png",
+      "num_valid": 25,
+      "num_face": 2,
+      "max_iou_nonface_vs_face": 0.11848974972963333,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": true
+    },
+    {
+      "sample_idx": 29,
+      "png": "sample_00029.png",
+      "num_valid": 21,
+      "num_face": 1,
+      "max_iou_nonface_vs_face": 0.04934701323509216,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 30,
+      "png": "sample_00030.png",
+      "num_valid": 12,
+      "num_face": 1,
+      "max_iou_nonface_vs_face": 0.009493366815149784,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    },
+    {
+      "sample_idx": 31,
+      "png": "sample_00031.png",
+      "num_valid": 11,
+      "num_face": 0,
+      "max_iou_nonface_vs_face": 0.0,
+      "out_of_range_ratio": 0.0,
+      "flagged_overlap": false
+    }
+  ],
+  "summary": {
+    "saved": 32,
+    "mean_max_iou": 0.01901347043167334,
+    "max_max_iou": 0.16743914783000946,
+    "mean_out_of_range_ratio": 0.0,
+    "flagged_overlap_ratio": 0.0625
+  }
+}

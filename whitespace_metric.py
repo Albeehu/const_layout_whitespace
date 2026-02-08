@@ -1,6 +1,7 @@
 #計算留白的指標2025/11/22
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+#可以用來作比較以及計算正確的留白數值
 
 """
 whitespace_metric.py
@@ -293,11 +294,8 @@ def style_scores_from_margins(
     w_side  = 1.0   # 側邊留白加權高一點
     w_tb    = 1.0   # 上下留白加權高一點
 
-    S_style = (
-        w_frame * S_frame +
-        w_side  * S_side  +
-        w_tb    * S_tb
-    ) / (w_frame + w_side + w_tb)
+    S_corner = np.sqrt(S_side * S_tb) # x^2 = sqrt() x=? ex. sqrt(0.64) = 0.8
+    S_style = (S_frame + S_side + S_tb + S_corner) / 4.0
 
 
     return dict(S_frame=S_frame, S_side=S_side, S_tb=S_tb, S_pos=S_pos, S_style=S_style,)

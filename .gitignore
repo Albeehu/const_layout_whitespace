@@ -41,3 +41,17 @@ rico_dataset_v0.1_semantic_annotations.zip
 
 # 依需求決定
 # crello_ws_gt0_6_metrics.csv
+
+# 忽略資料集 (請確認你的資料夾名稱，若是 crello 也請加入)
+data/
+dataset/
+crello_v3_mainpart/
+
+# 忽略訓練權重與快取
+*.pkl
+*.pth
+checkpoints/
+__pycache__/
+
+# 忽略系統檔
+.DS_Store
