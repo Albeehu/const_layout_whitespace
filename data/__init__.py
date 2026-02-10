@@ -3,7 +3,6 @@ from data.publaynet import PubLayNet
 from data.magazine import Magazine
 from .crello import CrelloDataset
 
-
 def get_dataset(name, split, transform=None):
     if name == 'rico':
         return Rico(split, transform)
@@ -28,3 +27,5 @@ def get_dataset(name, split, transform=None):
         )
 
     raise NotImplementedError(name)
+
+

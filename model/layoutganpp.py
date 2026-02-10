@@ -4,6 +4,7 @@ import torch.nn as nn
 from model.util import TransformerWithToken
 
 
+""" 2/10修改
 class Generator(nn.Module):
     def __init__(self, dim_latent, num_label,
                  d_model=512, nhead=8, num_layers=4):
@@ -31,6 +32,35 @@ class Generator(nn.Module):
         x = torch.sigmoid(x)
 
         return x
+"""
+
+class Generator(nn.Module):
+    def __init__(self, dim_latent, num_label, d_model=256, nhead=4, num_layers=4):
+        super().__init__()
+
+        # 第一層：接受 z (維度 4)
+        self.fc_z = nn.Linear(dim_latent, d_model) 
+        self.emb_label = nn.Embedding(num_label, d_model)
+        
+        # 第二層：接受 z 和 label 拼接後的特徵 (256 + 256 = 512)
+        self.fc_in = nn.Linear(d_model * 2, d_model)
+
+        te = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead,
+                                        dim_feedforward=d_model // 2)
+        self.transformer = nn.TransformerEncoder(te, num_layers=num_layers)
+
+        # 座標輸出層：名稱必須叫 fc_out_bbox 以配合映射
+        self.fc_out_bbox = nn.Linear(d_model, 4)
+
+    def forward(self, z, label, padding_mask):
+        z = self.fc_z(z) # z 應該是 [B, N, 4]
+        l = self.emb_label(label)
+        x = torch.cat([z, l], dim=-1) # 得到 512 維
+        x = torch.relu(self.fc_in(x)).permute(1, 0, 2)
+        x = self.transformer(x, src_key_padding_mask=padding_mask)
+        x = x.permute(1, 0, 2)
+        bbox = torch.sigmoid(self.fc_out_bbox(x))
+        return bbox
 
 
 class Discriminator(nn.Module):

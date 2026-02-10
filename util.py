@@ -47,14 +47,16 @@ def save_checkpoint(state, is_best, out_dir):
 
 
 def convert_xywh_to_ltrb(bbox):
-    xc, yc, w, h = bbox
+    xc, yc, w, h = bbox[0], bbox[1], bbox[2], bbox[3]
+    # 這是讓圖片散開的關鍵轉換
     x1 = xc - w / 2
     y1 = yc - h / 2
     x2 = xc + w / 2
     y2 = yc + h / 2
-    return [x1, y1, x2, y2]
+    return x1, y1, x2, y2
 
-
+#2/10需還原整段
+"""
 def convert_layout_to_image(boxes, labels, colors, canvas_size):
     H, W = canvas_size
     img = Image.new('RGB', (int(W), int(H)), color=(255, 255, 255))
@@ -76,6 +78,38 @@ def convert_layout_to_image(boxes, labels, colors, canvas_size):
                        outline=color,
                        fill=c_fill)
     return img
+"""
+
+def convert_layout_to_image(boxes, labels, colors, canvas_size):
+    H, W = canvas_size
+    img = Image.new('RGB', (int(W), int(H)), color=(255, 255, 255))
+    draw = ImageDraw.Draw(img, 'RGBA')
+
+    # 計算面積並排序
+    area = [b[2] * b[3] for b in boxes]
+    indices = sorted(range(len(area)), key=lambda i: area[i], reverse=True)
+
+    # 重點：確保 for i in indices 這行與上方的 area 對齊（通常是 4 個空格）
+    for i in indices:
+        # 這裡必須定義為 bbox
+        bbox = boxes[i] 
+        raw_color = colors[labels[i]]
+        color = tuple(raw_color)
+        
+        c_fill = color + (100,)
+        
+        # 這樣呼叫時才找得到 bbox
+        x1, y1, x2, y2 = convert_xywh_to_ltrb(bbox) 
+        
+        x1, x2 = x1 * (W - 1), x2 * (W - 1)
+        y1, y2 = y1 * (H - 1), y2 * (H - 1)
+        
+        draw.rectangle([x1, y1, x2, y2],
+                    outline=color,
+                    fill=c_fill)
+    return img
+
+
 
 
 def save_image(batch_boxes, batch_labels, batch_mask,
