@@ -104,9 +104,17 @@ def convert_layout_to_image(boxes, labels, colors, canvas_size):
         x1, x2 = x1 * (W - 1), x2 * (W - 1)
         y1, y2 = y1 * (H - 1), y2 * (H - 1)
         
+        if hasattr(color, "tolist"):  color = color.tolist()
+        if color is not None and not isinstance(color, (int, str)):
+            color = tuple(int(x) for x in color)
+
+        if hasattr(c_fill, "tolist"): c_fill = c_fill.tolist()
+        if c_fill is not None and not isinstance(c_fill, (int, str)):
+            c_fill = tuple(int(x) for x in c_fill)
+
         draw.rectangle([x1, y1, x2, y2],
                     outline=color,
-                    fill=c_fill)
+                    fill=None)
     return img
 
 

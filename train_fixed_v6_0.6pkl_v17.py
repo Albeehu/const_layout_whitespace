@@ -1,9 +1,7 @@
-"""用 train_fixed_v6_0.6pkl_v14 改 v15
-    1.修改這兩行：
-    parser.add_argument('--G_num_layers', type=int, default=4) # 改回 4
-    parser.add_argument('--D_num_layers', type=int, default=4) # 建議同步改回 4 保持穩定
-    2. # ... (前面的 checkpoint 加載邏輯) ... 修改權重區塊
-    3. 更新總 Loss
+"""用 train_fixed_v6_0.6pkl_v16 改 v17
+    1. 修改 RawLayoutDataset max_nodes = 15 -> max_nodes = 6
+    2. RawLayoutDataset 的篩選條件改成若 ele. 不夠可以先把 id = 4 id = 3 的元素捨去
+
 """
 import os
 import argparse
@@ -32,7 +30,7 @@ BG_ID = 3    # 背景
 MASK_ID = 4  # 遮罩
 
 class RawLayoutDataset(torch.utils.data.Dataset):
-    def __init__(self, data_list, num_classes, max_nodes=50, colors=None):
+    def __init__(self, data_list, num_classes, max_nodes=6, colors=None):
         self.data_list = data_list
         self.num_classes = num_classes
         self.max_nodes = max_nodes  
@@ -46,19 +44,41 @@ class RawLayoutDataset(torch.utils.data.Dataset):
         bbox = np.array(bbox)
         label = np.array(label)
 
-        # --- 新增：標籤映射邏輯 ---
-        # 遍歷目前這筆資料的所有元件
-        for i in range(len(label)):
-            # 如果是 SVG (ID 0) 且面積較大 (例如大於畫面的 15%)
-            # 這裡的面積計算是 width * height (bbox[i][2] * bbox[i][3])
-            area = bbox[i][2] * bbox[i][3]
-            if (label[i] == 0) and area > 0.15:
-                label[i] = 2  # 強制轉為 Image 標籤
-        # -----------------------
+        # --- 先做：SVG 大面積映射成 Image (2)（放在裁切前） ---
+        area = bbox[:, 2] * bbox[:, 3]
+        svg_big = (label == 0) & (area > 0.15)
+        label[svg_big] = 2
 
+        # --- 元件過多時：依優先級保留 ---
         n = len(label)
+        if n > self.max_nodes:
+            idxs = np.arange(n)
+
+            # priority 越小越重要（越會被保留）
+            # 0: Face(5), Image(2)  最優先保留
+            # 1: 其他正常元件
+            # 2: Background(3)      次要（較晚保留）
+            # 3: Mask(4)            最不重要（最先捨棄）
+            priority = np.ones(n, dtype=np.int64)
+            priority[np.isin(label, [2, 5])] = 0
+            priority[label == 1] = 1
+            priority[label == 3] = 2
+            priority[label == 4] = 3
+
+            # 同優先級內：可選擇保留面積大的（避免保留一堆超小碎片）
+            # 排序 key：priority(小→大) -> area(大→小) -> 原始順序(小→大)
+            order = np.lexsort((idxs, -area, priority))
+
+            keep = order[:self.max_nodes]
+            keep = np.sort(keep)  # 取回原本順序（通常對模型更穩）
+
+            label = label[keep]
+            bbox = bbox[keep]
+            n = len(label)
+
+        # --- padding 與回傳保持不變 ---
         curr_n = min(n, self.max_nodes)
-        
+
         pad_x = torch.full((self.max_nodes,), self.num_classes - 1, dtype=torch.long)
         pad_pos = torch.zeros((self.max_nodes, 4), dtype=torch.float)
         pad_mask = torch.zeros((self.max_nodes,), dtype=torch.bool)
@@ -67,11 +87,8 @@ class RawLayoutDataset(torch.utils.data.Dataset):
         pad_pos[:curr_n] = torch.FloatTensor(bbox[:curr_n])
         pad_mask[:curr_n] = True
 
-        return {
-            'x': pad_x,
-            'pos': pad_pos,
-            'mask': pad_mask
-        }
+        return {'x': pad_x, 'pos': pad_pos, 'mask': pad_mask}
+
 
 def xywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
     cx, cy, w, h = boxes.unbind(-1)

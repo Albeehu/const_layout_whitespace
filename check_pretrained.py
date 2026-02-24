@@ -1,3 +1,5 @@
+#debug用 確認模型有吃到所有transformer權重層
+
 import torch
 import os
 from pathlib import Path

@@ -32,7 +32,7 @@ BG_ID = 3    # 背景
 MASK_ID = 4  # 遮罩
 
 class RawLayoutDataset(torch.utils.data.Dataset):
-    def __init__(self, data_list, num_classes, max_nodes=50, colors=None):
+    def __init__(self, data_list, num_classes, max_nodes=15, colors=None):
         self.data_list = data_list
         self.num_classes = num_classes
         self.max_nodes = max_nodes  
@@ -45,6 +45,20 @@ class RawLayoutDataset(torch.utils.data.Dataset):
         bbox, label = self.data_list[idx]
         bbox = np.array(bbox)
         label = np.array(label)
+
+        # --- 優先保留 Face (5) 和 Image (2) ---
+        n = len(label)
+        if n > self.max_nodes:
+            # 找出重要元件的索引
+            important_indices = [i for i, l in enumerate(label) if l in [2, 5]]
+            other_indices = [i for i, l in enumerate(label) if l not in [2, 5]]
+            
+            # 組合索引，確保重要元件排在前面，總數不超過 max_nodes
+            keep_indices = (important_indices + other_indices)[:self.max_nodes]
+            
+            label = label[keep_indices]
+            bbox = bbox[keep_indices]
+            n = len(label)
 
         # --- 新增：標籤映射邏輯 ---
         # 遍歷目前這筆資料的所有元件
