@@ -1,3 +1,4 @@
+#用來確認fixed_sample的label有哪些
 import torch
 
 def inspect_fixed_sample(file_path):
@@ -46,5 +47,5 @@ def inspect_fixed_sample(file_path):
 
 if __name__ == "__main__":
     # 請確保路徑正確
-    target_file = '/home/albee/const_layout_whitespace/fixed_sample.pt' 
+    target_file = '/home/albee/const_layout_whitespace/fixed_sample_v45.pt' 
     inspect_fixed_sample(target_file)
