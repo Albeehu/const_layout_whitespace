@@ -1,12 +1,14 @@
-"""用 train_fixed_v6_0.6pkl_v41 改 v42
-    1. 修改 loss_style 的計算 才不會重疊
+"""用 train_fixed_v6_0.6pkl_v43 改 v44
+    1. face 看image 給出相對位置
 """
 import os
 import csv
 import argparse
 import pickle
 from pathlib import Path
+from typing import Optional
 import numpy as np
+import random
 os.environ['OMP_NUM_THREADS'] = '1'
 
 import torch
@@ -30,13 +32,27 @@ BG_ID = 3    # 背景
 MASK_ID = 4  # 遮罩
 FACE_ID = 5
 
+def seed_worker(worker_id: int):
+    """Ensure numpy/random have different seeds across DataLoader workers.
+
+    Important because RawLayoutDataset now uses np.random.shuffle for max_nodes sampling.
+    """
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
 class RawLayoutDataset(torch.utils.data.Dataset):
     """
-    更新邏輯：
-    1. Face (ID=5) 不計入 max_nodes=4 的配額。
-    2. 其他元件依優先權（Image > Text > SVG > BG > Mask）保留最多 6 個。
-    3. 移除 Face 面積排序，直接按原始順序取前 max_faces 個。
-    4. 最後將 Face 合併回生成清單，確保生成器會輸出人臉框。
+    更新邏輯（Robust版）：
+    1) Face (ID=5) 不計入 max_nodes 的配額。
+    2) 其他元件依 priority（Image > Text > SVG > BG > Mask）保留最多 max_nodes 個。
+    3) Face 只保留「屬於被保留 Image」的人臉（避免 face 對應到被截斷掉的 image）。
+    4) 回傳 face 的 target 以「相對於對應 Image 的座標」表示：face_rel = (rx, ry, rw, rh)
+       - rx = (cx_face - cx_img) / w_img
+       - ry = (cy_face - cy_img) / h_img
+       - rw = w_face / w_img
+       - rh = h_face / h_img
+    5) Robust: 如果該樣本沒有 image（或 image 全被截斷），則直接丟棄所有 face，避免 rel=空陣列造成 tensor assignment error。
     """
     def __init__(self, data_list, num_classes, max_nodes=4, max_faces=4, colors=None):
         self.data_list = data_list
@@ -49,78 +65,173 @@ class RawLayoutDataset(torch.utils.data.Dataset):
         return len(self.data_list)
 
     def __getitem__(self, idx):
-            bbox, label = self.data_list[idx]
-            bbox = np.array(bbox)
-            label = np.array(label)
+        bbox, label = self.data_list[idx]
+        bbox = np.array(bbox)
+        label = np.array(label)
 
-            # 1. 分離人臉與其他元件
-            face_mask_idx = (label == FACE_ID)
-            temp_f_label = label[face_mask_idx]
-            temp_f_bbox = bbox[face_mask_idx]
-            o_label = label[~face_mask_idx]
-            o_bbox = bbox[~face_mask_idx]
+        # 1) 分離人臉與其他元件
+        face_mask_idx = (label == FACE_ID)
+        temp_f_label = label[face_mask_idx]
+        temp_f_bbox = bbox[face_mask_idx]
+        o_label = label[~face_mask_idx]
+        o_bbox = bbox[~face_mask_idx]
 
-            # 2. 處理非人臉元件 (max_nodes=6)
-            if len(o_label) > 0:
-                area = o_bbox[:, 2] * o_bbox[:, 3]
-                o_label[(o_label == 0) & (area > 0.15)] = IMG_ID
+        # 2) 處理非人臉元件 (把大 SVG 當 Image)
+        if len(o_label) > 0:
+            area = o_bbox[:, 2] * o_bbox[:, 3]
+            o_label[(o_label == SVG_ID) & (area > 0.15)] = IMG_ID
 
-            n = len(o_label)
-            if n > self.max_nodes:
-                area = o_bbox[:, 2] * o_bbox[:, 3]
-                idxs = np.arange(n)
-                priority = np.ones(n, dtype=np.int64)
-                priority[o_label == IMG_ID] = 0
-                priority[o_label == TEXT_ID] = 1
-                priority[o_label == SVG_ID] = 2
-                priority[o_label == BG_ID] = 3
-                priority[o_label == MASK_ID] = 4
-                order = np.lexsort((idxs, -area, priority))
-                keep = np.sort(order[:self.max_nodes])
-                o_label = o_label[keep]
-                o_bbox = o_bbox[keep]
+        # 備份（在 max_nodes 截斷前）用於 face->image 對應
+        o_label_all = o_label.copy()
+        o_bbox_all = o_bbox.copy()
 
-            # 3. [修正版] 直接保留所有人臉，不進行 is_contained 過濾
-            # 這樣生成器才能學到人臉與圖片的對應關係
-            f_label = temp_f_label
-            f_bbox = temp_f_bbox
+        # 2.5) 如果本來就沒有任何非-face token，無法建立 image 對應 => 直接丟棄 face
+        if len(o_label_all) == 0:
+            temp_f_label = np.array([], dtype=np.int64)
+            temp_f_bbox = np.empty((0, 4), dtype=np.float32)
 
-            # 如果該樣本完全沒有臉，仍需處理空陣列
-            if len(f_label) == 0:
+        n = len(o_label)
+        keep_o_idxs = np.arange(n, dtype=np.int64)  # o_label_all/o_bbox_all 中被保留的索引（截斷前的 index）
+        if n > self.max_nodes:
+            idxs = np.arange(n)
+
+            priority = np.full(n, 999, dtype=np.int64)
+            priority[o_label == IMG_ID] = 0
+            priority[o_label == TEXT_ID] = 1
+            priority[o_label == SVG_ID] = 2
+            priority[o_label == BG_ID] = 3
+            priority[o_label == MASK_ID] = 4
+
+            keep_list = []
+            for p in np.unique(priority):
+                cand = idxs[priority == p]
+                if cand.size == 0:
+                    continue
+                np.random.shuffle(cand)
+                need = self.max_nodes - len(keep_list)
+                if need <= 0:
+                    break
+                keep_list.extend(cand[:need].tolist())
+                if len(keep_list) >= self.max_nodes:
+                    break
+
+            keep = np.array(sorted(keep_list), dtype=np.int64)
+            keep_o_idxs = keep.copy()
+            o_label = o_label[keep]
+            o_bbox = o_bbox[keep]
+
+        # 3) Face 只保留「屬於被保留 Image」的人臉，並建立 face->image mapping
+        f_label = temp_f_label
+        f_bbox = temp_f_bbox
+
+        keep_map = {int(orig_i): int(pos_i) for pos_i, orig_i in enumerate(keep_o_idxs.tolist())}
+
+        face2img_list = []
+        if len(f_label) > 0 and len(o_label_all) > 0:
+            img_all_idx = np.where(o_label_all == IMG_ID)[0]
+
+            if img_all_idx.size == 0:
+                # 沒有 image => 無法對應 => 丟棄全部 face
                 f_label = np.array([], dtype=np.int64)
-                f_bbox = np.empty((0, 4))
-            
-            # 4. 初始化回傳給 Face Anchor Loss 的數據
-            # 只要原始數據有臉，face_mask 就是 True，強制模型去學習對齊
-            face_pos = torch.zeros((self.max_faces, 4), dtype=torch.float)
-            face_mask = torch.zeros((self.max_faces,), dtype=torch.bool)
-            nf = min(len(f_label), self.max_faces)
-            if nf > 0:
-                face_pos[:nf] = torch.FloatTensor(f_bbox[:nf])
-                face_mask[:nf] = True
+                f_bbox = np.empty((0, 4), dtype=np.float32)
+                face2img_list = []
+            else:
+                def _cxcywh_to_xyxy_np(bb):
+                    cx, cy, w, h = bb[:, 0], bb[:, 1], bb[:, 2], bb[:, 3]
+                    x1 = np.clip(cx - w / 2.0, 0.0, 1.0)
+                    y1 = np.clip(cy - h / 2.0, 0.0, 1.0)
+                    x2 = np.clip(cx + w / 2.0, 0.0, 1.0)
+                    y2 = np.clip(cy + h / 2.0, 0.0, 1.0)
+                    return np.stack([x1, y1, x2, y2], axis=1)
 
-            # 4. 合併與 Padding
-            final_label = np.concatenate([o_label, f_label])
-            final_bbox = np.concatenate([o_bbox, f_bbox])
-            
-            total_cap = self.max_nodes + self.max_faces
-            pad_x = torch.full((total_cap,), self.num_classes - 1, dtype=torch.long)
-            pad_pos = torch.zeros((total_cap, 4), dtype=torch.float)
-            pad_mask = torch.zeros((total_cap,), dtype=torch.bool)
+                img_xy = _cxcywh_to_xyxy_np(o_bbox_all[img_all_idx])  # (M,4)
+                face_xy = _cxcywh_to_xyxy_np(f_bbox)                  # (F,4)
 
-            curr_total = len(final_label)
-            pad_x[:curr_total] = torch.LongTensor(final_label)
-            pad_pos[:curr_total] = torch.FloatTensor(final_bbox)
-            pad_mask[:curr_total] = True 
+                x1 = np.maximum(img_xy[:, None, 0], face_xy[None, :, 0])
+                y1 = np.maximum(img_xy[:, None, 1], face_xy[None, :, 1])
+                x2 = np.minimum(img_xy[:, None, 2], face_xy[None, :, 2])
+                y2 = np.minimum(img_xy[:, None, 3], face_xy[None, :, 3])
+                inter = np.clip(x2 - x1, 0.0, None) * np.clip(y2 - y1, 0.0, None)
 
-            return {
-                'x': pad_x,
-                'pos': pad_pos,
-                'mask': pad_mask,
-                'face_pos': face_pos,
-                'face_mask': face_mask,
-            }
+                f_area = np.clip(face_xy[:, 2] - face_xy[:, 0], 0.0, None) * np.clip(face_xy[:, 3] - face_xy[:, 1], 0.0, None)
+                f_area = np.maximum(f_area, 1e-9)
 
+                ratio = inter / f_area[None, :]  # (M,F)
+                best_m = ratio.argmax(axis=0)    # (F,)
+                best_ratio = ratio[best_m, np.arange(len(f_label))]
+
+                contain_thr = 0.98
+                assigned_img_idx = np.where(best_ratio >= contain_thr, img_all_idx[best_m], -1).astype(np.int64)
+
+                f_keep = np.zeros((len(f_label),), dtype=bool)
+                face2img_tmp = np.full((len(f_label),), -1, dtype=np.int64)
+
+                for fi, ai in enumerate(assigned_img_idx.tolist()):
+                    if ai == -1:
+                        continue
+                    if ai in keep_map:
+                        f_keep[fi] = True
+                        face2img_tmp[fi] = keep_map[ai]
+
+                f_label = f_label[f_keep]
+                f_bbox = f_bbox[f_keep]
+                face2img_tmp = face2img_tmp[f_keep]
+                face2img_list = face2img_tmp.tolist()
+
+        # 若沒有臉，統一成空
+        if len(f_label) == 0:
+            f_label = np.array([], dtype=np.int64)
+            f_bbox = np.empty((0, 4), dtype=np.float32)
+            face2img_list = []
+
+        # 4) 建立「相對座標」target：face_rel_pos，以及 face2img / face_mask
+        face_rel_pos = torch.zeros((self.max_faces, 4), dtype=torch.float)
+        face2img = torch.full((self.max_faces,), -1, dtype=torch.long)
+        face_mask = torch.zeros((self.max_faces,), dtype=torch.bool)
+
+        # Robust: nf 以 mapping 長度為準，避免 face2img_list 不足造成 rel=空
+        nf = min(len(face2img_list), len(f_label), self.max_faces)
+        if nf > 0:
+            eps = 1e-6
+            f_bbox_nf = f_bbox[:nf].astype(np.float32)
+            f2i_nf = np.array(face2img_list[:nf], dtype=np.int64)
+
+            # 用截斷後的 image bbox (o_bbox) 來算相對座標
+            img_bbox_nf = o_bbox[f2i_nf].astype(np.float32)
+
+            rx = (f_bbox_nf[:, 0] - img_bbox_nf[:, 0]) / (img_bbox_nf[:, 2] + eps)
+            ry = (f_bbox_nf[:, 1] - img_bbox_nf[:, 1]) / (img_bbox_nf[:, 3] + eps)
+            rw = (f_bbox_nf[:, 2]) / (img_bbox_nf[:, 2] + eps)
+            rh = (f_bbox_nf[:, 3]) / (img_bbox_nf[:, 3] + eps)
+
+            rel = np.stack([rx, ry, rw, rh], axis=1).astype(np.float32)
+
+            face_rel_pos[:nf] = torch.from_numpy(rel)
+            face2img[:nf] = torch.from_numpy(f2i_nf)
+            face_mask[:nf] = True
+
+        # 5) 合併與 Padding：token 序列仍然是 [o_label + f_label]
+        final_label = np.concatenate([o_label, f_label])
+        final_bbox = np.concatenate([o_bbox, f_bbox]) if len(f_bbox) > 0 else o_bbox
+
+        total_cap = self.max_nodes + self.max_faces
+        pad_x = torch.full((total_cap,), self.num_classes - 1, dtype=torch.long)
+        pad_pos = torch.zeros((total_cap, 4), dtype=torch.float)
+        pad_mask = torch.zeros((total_cap,), dtype=torch.bool)
+
+        curr_total = len(final_label)
+        pad_x[:curr_total] = torch.LongTensor(final_label)
+        pad_pos[:curr_total] = torch.FloatTensor(final_bbox)
+        pad_mask[:curr_total] = True
+
+        return {
+            'x': pad_x,
+            'pos': pad_pos,
+            'mask': pad_mask,
+            'face_rel': face_rel_pos,
+            'face2img': face2img,
+            'face_mask': face_mask,
+        }
 
 
 def xywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
@@ -189,6 +300,154 @@ def project_fixed_aspect_scale(
     cx2 = out[..., 0].clamp(half_w, 1.0 - half_w)
     cy2 = out[..., 1].clamp(half_h, 1.0 - half_h)
     return torch.stack([cx2, cy2, out[..., 2], out[..., 3]], dim=-1)
+
+# ============================================================
+# HARD COUPLING: Face is NOT an independent layout element.
+# Face token outputs RELATIVE parameters (rx, ry, rw, rh) w.r.t.
+# its corresponding Image token. Absolute face bbox is derived:
+#   cx_f = cx_img + rx * w_img
+#   cy_f = cy_img + ry * h_img
+#   w_f  = rw * w_img
+#   h_f  = rh * h_img
+# ============================================================
+
+def _decode_face_rel_from_token(
+    t: torch.Tensor,
+    rx_max: float = 0.75,
+    ry_max: float = 0.75,
+    rw_min: float = 0.05,
+    rw_max: float = 1.00,
+    rh_min: float = 0.05,
+    rh_max: float = 1.00,
+) -> torch.Tensor:
+    """
+    t: (...,4) in [0,1] (generator output)
+    returns rel: (...,4) where
+      rx, ry in [-rx_max, rx_max] / [-ry_max, ry_max]
+      rw in [rw_min, rw_max]
+      rh in [rh_min, rh_max]
+    """
+    tx, ty, tw, th = t.unbind(-1)
+    rx = (tx - 0.5) * 2.0 * rx_max
+    ry = (ty - 0.5) * 2.0 * ry_max
+    rw = rw_min + tw * (rw_max - rw_min)
+    rh = rh_min + th * (rh_max - rh_min)
+    return torch.stack([rx, ry, rw, rh], dim=-1)
+
+def hard_couple_faces_to_images(
+    bbox_pred: torch.Tensor,
+    label: torch.Tensor,
+    padding_mask: torch.Tensor,
+    face2img: torch.Tensor,
+    face_mask: Optional[torch.Tensor] = None,
+    rx_max: float = 0.75,
+    ry_max: float = 0.75,
+    rw_min: float = 0.05,
+    rw_max: float = 1.00,
+    rh_min: float = 0.05,
+    rh_max: float = 1.00,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """
+    bbox_pred: (B,N,4) generator output in [0,1]
+      - Image/Text/SVG tokens are absolute (cx,cy,w,h)
+      - Face tokens are interpreted as relative parameters (rx,ry,rw,rh) AFTER decoding.
+    face2img:  (B,max_faces) mapping for i-th face (in order) -> image token index
+    face_mask: (B,max_faces) indicates valid GT faces (optional; if None, we couple up to max_faces)
+    Returns: bbox_out (B,N,4) where Face tokens have been replaced by the derived absolute bbox.
+    """
+    device = bbox_pred.device
+    B, N, _ = bbox_pred.shape
+    bbox_out = bbox_pred.clone()
+
+    max_faces = face2img.size(1)
+
+    for b in range(B):
+        valid = ~padding_mask[b]
+        f_idx = torch.where((label[b] == FACE_ID) & valid)[0]
+
+        if face_mask is not None:
+            n_gt = int(face_mask[b].sum().item())
+            n = min(int(f_idx.numel()), n_gt, max_faces)
+        else:
+            n = min(int(f_idx.numel()), max_faces)
+
+        if n <= 0:
+            continue
+
+        for i in range(n):
+            img_idx = int(face2img[b, i].item())
+            if img_idx < 0 or img_idx >= N:
+                continue
+            if (not valid[img_idx].item()) or (label[b, img_idx].item() != IMG_ID):
+                continue
+
+            # decode relative params from FACE token output
+            rel = _decode_face_rel_from_token(
+                bbox_pred[b, f_idx[i]],
+                rx_max=rx_max, ry_max=ry_max,
+                rw_min=rw_min, rw_max=rw_max,
+                rh_min=rh_min, rh_max=rh_max,
+            )
+            rx, ry, rw, rh = rel.unbind(-1)
+
+            img_box = bbox_pred[b, img_idx].clone()
+            cx_i, cy_i, w_i, h_i = img_box.unbind(-1)
+            w_i = w_i.clamp_min(eps)
+            h_i = h_i.clamp_min(eps)
+
+            # derive absolute face bbox
+            cx_f = cx_i + rx * w_i
+            cy_f = cy_i + ry * h_i
+            w_f  = (rw * w_i).clamp(min=eps, max=1.0)
+            h_f  = (rh * h_i).clamp(min=eps, max=1.0)
+
+            # keep inside canvas
+            cx_f = cx_f.clamp(w_f / 2.0, 1.0 - w_f / 2.0)
+            cy_f = cy_f.clamp(h_f / 2.0, 1.0 - h_f / 2.0)
+
+            bbox_out[b, f_idx[i]] = torch.stack([cx_f, cy_f, w_f, h_f], dim=-1)
+
+    return bbox_out
+
+def infer_face2img_from_reference(
+    bbox_ref: torch.Tensor,
+    label: torch.Tensor,
+    padding_mask: torch.Tensor,
+    max_faces: int = 4,
+    contain_thr: float = 0.98,
+) -> torch.Tensor:
+    """
+    用 reference bbox (通常是 GT 的 pos) 推導 face -> image 的 mapping。
+    回傳 face2img: (B, max_faces)；以 face token 的順序為準（取前 max_faces）。
+    """
+    device = bbox_ref.device
+    B, N, _ = bbox_ref.shape
+    face2img = torch.full((B, max_faces), -1, device=device, dtype=torch.long)
+
+    for b in range(B):
+        valid = ~padding_mask[b]
+        img_idx = torch.where((label[b] == IMG_ID) & valid)[0]
+        face_idx = torch.where((label[b] == FACE_ID) & valid)[0]
+        if img_idx.numel() == 0 or face_idx.numel() == 0:
+            continue
+
+        out_xyxy = xywh_to_xyxy(bbox_ref[b][img_idx])   # (M,4)
+        in_xyxy  = xywh_to_xyxy(bbox_ref[b][face_idx])  # (F,4)
+
+        in_area = box_area_xyxy(in_xyxy).clamp_min(1e-9)
+        inter_area = box_intersection_area_xyxy(out_xyxy, in_xyxy)  # (M,F)
+        contain_ratio = (inter_area / in_area).max(dim=0)[0]        # (F,)
+        best_m = (inter_area / in_area).argmax(dim=0)               # (F,)
+
+        nf = min(int(face_idx.numel()), max_faces)
+        for i in range(nf):
+            if contain_ratio[i].item() >= contain_thr:
+                face2img[b, i] = img_idx[best_m[i]].long()
+
+    return face2img
+
+
 
 def whitespace_style_loss(bbox_fake, label, padding_mask, wr_min=0.6, w_style=1.0, style_mode="max", style_tags=None):
     """
@@ -451,51 +710,117 @@ def add_to_diag(mat: torch.Tensor, val: float) -> torch.Tensor:
         eye = eye.unsqueeze(0)
     return mat + eye * val
 
-def pairwise_overlap_loss(bbox_fake, label, padding_layout):
+def pairwise_overlap_loss(bbox_fake, label, padding_layout, big_img_thr: float = 0.90):
+    """Pairwise overlap penalty with special rule for huge images.
+
+    - Image-Image overlap is penalized.
+    - BUT if either image covers >= big_img_thr (e.g., 0.90) of the canvas area,
+      we allow Image-Image overlap (treat it as background-like / full-bleed element).
+    - BG / MASK are ignored (weight=0), and IMG-FACE overlap is ignored (face is inside image).
+    """
     padding_mask = padding_layout
     device = bbox_fake.device
+
+    # label-pair weights
     W = torch.ones((10, 10), device=device)
     W[BG_ID, :], W[:, BG_ID], W[MASK_ID, :], W[:, MASK_ID] = 0.0, 0.0, 0.0, 0.0
-    W[IMG_ID, FACE_ID], W[FACE_ID, IMG_ID] = 0.0, 0.0 
-    W[1, 1], W[1, FACE_ID], W[FACE_ID, 1] = 10.0, 25.0, 25.0  # 避免雙重懲罰：face_coverage_loss 已經在管文字壓臉
-    
+    W[IMG_ID, FACE_ID], W[FACE_ID, IMG_ID] = 0.0, 0.0
+    W[IMG_ID, IMG_ID] = 3.0  # 讓 Image-Image 重疊更明顯被懲罰（可再調）
+    # 避免雙重懲罰：face_coverage_loss 已經在管文字壓臉
+    W[TEXT_ID, TEXT_ID], W[TEXT_ID, FACE_ID], W[FACE_ID, TEXT_ID] = 10.0, 25.0, 25.0
+
     losses = []
     for b in range(bbox_fake.size(0)):
         valid = ~padding_mask[b]
-        if valid.sum() <= 1: continue
-        xyxy = xywh_to_xyxy(bbox_fake[b][valid]); labs = label[b][valid]
+        if valid.sum() <= 1:
+            continue
+
+        xyxy = xywh_to_xyxy(bbox_fake[b][valid])
+        labs = label[b][valid]
+
         inter = box_intersection_area_xyxy(xyxy, xyxy)
         n = inter.size(0)
         eye = torch.eye(n, device=inter.device, dtype=inter.dtype)
         inter = inter * (1.0 - eye)   # 不用 fill_diagonal_，避免 inplace
+
         area = box_area_xyxy(xyxy, eps=1e-4)
         denom = torch.minimum(area[:, None], area[None, :]).clamp(min=1e-4)
         overlap_ratio = (inter / denom).clamp(max=2.0)
-        loss_b = (overlap_ratio * W[labs[:, None], labs[None, :]]).triu(1).sum()
+
+        # ---- special rule: allow IMG-IMG overlap if either IMG is huge (>= 90% canvas) ----
+        is_img = (labs == IMG_ID)
+        is_big_img = is_img & (area >= big_img_thr)
+        allow_img_img = (is_img[:, None] & is_img[None, :]) & (is_big_img[:, None] | is_big_img[None, :])
+        overlap_ratio = overlap_ratio * (~allow_img_img).to(overlap_ratio.dtype)
+
+        weights = W[labs[:, None], labs[None, :]]
+        loss_b = (overlap_ratio * weights).triu(1).sum()
         losses.append(loss_b / ((valid.sum() * (valid.sum() - 1)) / 2).clamp(min=1))
+
     return torch.stack(losses).mean() if losses else torch.tensor(0.0, device=device)
 
-def face_anchor_loss(bbox_fake, label, padding_mask, face_pos, face_mask, lambda_anchor=50.0):
+def face_anchor_loss_relative(bbox_fake, label, padding_mask, face_rel, face_mask, face2img, lambda_anchor=50.0):
     """
-    強迫生成器預測的人臉框 (bbox_fake[label==5]) 去對齊真實的人臉座標 (face_pos)。
-    這能教導生成器「臉通常長在哪裡」。
+    Relative face-anchor loss:
+    - Target (GT) is relative to its corresponding image box (rx, ry, rw, rh).
+    - Prediction compares the generated face box relative to the generated image box.
+
+    face_rel:  (B, max_faces, 4)   [rx, ry, rw, rh]
+    face2img:  (B, max_faces)      token index of corresponding image in the SAME sequence
+    face_mask: (B, max_faces)      True for valid GT faces
     """
     device = bbox_fake.device
     B = bbox_fake.size(0)
-    loss, count = torch.tensor(0.0, device=device), 0
-    
-    for b in range(B):
-        f_idx_in_gen = torch.where((label[b] == FACE_ID) & (~padding_mask[b]))[0]
-        num_gt_faces = face_mask[b].sum()
-        
-        n = min(len(f_idx_in_gen), num_gt_faces)
-        if n > 0:
-            # 假設順序一致（因為 RawLayoutDataset 的拼接順序是固定的）
-            loss += F.mse_loss(bbox_fake[b][f_idx_in_gen[:n]], face_pos[b][:n])
-            count += 1
-            
-    return lambda_anchor * (loss / count) if count > 0 else loss
+    total_loss = torch.tensor(0.0, device=device)
+    total_count = 0
+    eps = 1e-6
 
+    for b in range(B):
+        valid = ~padding_mask[b]
+
+        # indices of face tokens produced by generator in this sample
+        f_idx = torch.where((label[b] == FACE_ID) & valid)[0]
+        n_gt = int(face_mask[b].sum().item())
+        n = min(int(f_idx.numel()), n_gt)
+        if n <= 0:
+            continue
+
+        # build r_pred and r_gt for valid (face,image) pairs
+        r_pred_list = []
+        r_gt_list = []
+
+        for i in range(n):
+            img_idx = int(face2img[b, i].item())
+            if img_idx < 0:
+                continue
+            if img_idx >= label.size(1):
+                continue
+            if (not valid[img_idx].item()) or (label[b, img_idx].item() != IMG_ID):
+                continue
+
+            img_box = bbox_fake[b, img_idx]
+            face_box = bbox_fake[b, f_idx[i]]
+
+            w_img = img_box[2].clamp_min(eps)
+            h_img = img_box[3].clamp_min(eps)
+
+            rx = (face_box[0] - img_box[0]) / w_img
+            ry = (face_box[1] - img_box[1]) / h_img
+            rw = face_box[2] / w_img
+            rh = face_box[3] / h_img
+
+            r_pred_list.append(torch.stack([rx, ry, rw, rh], dim=0))
+            r_gt_list.append(face_rel[b, i])
+
+        if len(r_pred_list) == 0:
+            continue
+
+        r_pred = torch.stack(r_pred_list, dim=0)
+        r_gt = torch.stack(r_gt_list, dim=0)
+        total_loss += F.mse_loss(r_pred, r_gt)
+        total_count += 1
+
+    return lambda_anchor * (total_loss / total_count) if total_count > 0 else total_loss
 
 
 def main():
@@ -532,7 +857,7 @@ def main():
     parser.add_argument('--vis_every', type=int, default=1000)
     parser.add_argument('--seed', type=int, default=None)
     parser.add_argument('--num_workers', type=int, default=4)
-    parser.add_argument('--fixed_sample', type=str, default='fixed_sample_v46.pt') # 確保檔名正確
+    parser.add_argument('--fixed_sample', type=str, default='fixed_sample_v47.pt') # 確保檔名正確
     parser.add_argument('--eval_every', type=int, default=10000)
     parser.add_argument('--G_d_model', type=int, default=256)
     parser.add_argument('--G_nhead', type=int, default=4)
@@ -541,6 +866,14 @@ def main():
     parser.add_argument('--D_nhead', type=int, default=4)
     parser.add_argument('--D_num_layers', type=int, default=4)
     args = parser.parse_args()
+
+    # ---- Reproducibility / randomness control ----
+    # 若你要可重現：指定 --seed
+    if args.seed is not None:
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+        np.random.seed(args.seed)
+        random.seed(args.seed)
 
     # 初始化實驗，取得輸出的資料夾路徑 out_dir
     out_dir = init_experiment(args, "LayoutGAN++")
@@ -578,7 +911,19 @@ def main():
     train_dataset.colors = [tuple(int(c) for c in color) for color in train_dataset.colors]
 
     # 確保這行在所有路徑下都會執行
-    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
+    dl_gen = None
+    if args.seed is not None:
+        dl_gen = torch.Generator()
+        dl_gen.manual_seed(args.seed)
+
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        worker_init_fn=seed_worker,
+        generator=dl_gen,
+    )
     # 模型初始化
     netG = Generator(args.latent_size, train_dataset.num_classes, d_model=args.G_d_model, nhead=args.G_nhead, num_layers=args.G_num_layers).to(device)
     netD = Discriminator(train_dataset.num_classes, d_model=args.D_d_model, nhead=args.D_nhead, num_layers=args.D_num_layers).to(device)
@@ -625,9 +970,9 @@ def main():
 
     
     # === 固定樣本載入：建議使用含 pos 的 fixed_sample_v46.pt ===
-    fixed_path = 'fixed_sample_v46.pt'
+    fixed_path = 'fixed_sample_v47.pt'
     if not os.path.exists(fixed_path):
-        print(f"致命錯誤：找不到 {fixed_path}。請先用 make_fixed_sample_v46.py 產生。")
+        print(f"致命錯誤：找不到 {fixed_path}。請先用 make_fixed_sample_v47.py 產生。")
         exit()
 
     ck = torch.load(fixed_path, weights_only=False, map_location=device)
@@ -650,8 +995,8 @@ def main():
     tmp = fixed_label[fixed_mask].reshape(-1)
     print("[fixed bincount]", torch.bincount(tmp, minlength=6).tolist())
 
-    # 你最後不想畫 face：視覺化時直接排除 FACE_ID
-    fixed_mask_noface = fixed_mask & (fixed_label != FACE_ID)
+    # 視覺化要畫 face：保留 fixed_mask 原樣即可（不再排除 FACE_ID）
+    fixed_mask_noface = fixed_mask  # kept for backward compatibility; not used
 
     optimizerG = optim.Adam(netG.parameters(), lr=args.lr)
     optimizerD = optim.Adam(netD.parameters(), lr=args.lr)
@@ -665,7 +1010,8 @@ def main():
             label = data['x'].to(device)
             pos = data['pos'].to(device)
             mask = data['mask'].to(device)
-            face_pos = data['face_pos'].to(device)
+            face_rel = data['face_rel'].to(device)
+            face2img = data['face2img'].to(device)
             face_mask = data['face_mask'].to(device)
             bbox_real, padding_mask = pos, ~mask
             z = torch.randn(label.size(0), label.size(1), args.latent_size, device=device)
@@ -673,6 +1019,19 @@ def main():
             # Update G
             netG.train(); netG.zero_grad()
             bbox_fake = torch.clamp(netG(z, label, padding_mask), 0, 1)
+            # --- (2) 固定元素長寬比：只允許等比例縮放（避免元素被壓成細條） ---：只允許等比例縮放（避免元素被壓成細條） ---
+            if args.fix_aspect:
+                bbox_fake = project_fixed_aspect_scale(
+                    bbox_fake, bbox_real, label, padding_mask,
+                    target_ids=(SVG_ID, TEXT_ID, IMG_ID),
+                )
+            # --- (HARD) Face 與 Image 硬耦合：Face token 只輸出相對參數，Face bbox 由對應 Image 推導 ---
+            # 注意：需要 face2img (dataset 產生) 來指定每張臉屬於哪張 image
+            bbox_fake = hard_couple_faces_to_images(
+                bbox_fake, label, padding_mask,
+                face2img=face2img, face_mask=face_mask,
+            )
+
             # --- (1) Image 固定 => Face 也固定：用 GT 直接覆蓋（避免 containment/face loss 逼到退化解） ---
             if args.fix_img_prob > 0:
                 Bsz = label.size(0)
@@ -684,13 +1043,6 @@ def main():
                     bbox_fake = torch.where(img_fix_m.unsqueeze(-1), bbox_real, bbox_fake)
                     bbox_fake = torch.where(face_fix_m.unsqueeze(-1), bbox_real, bbox_fake)
 
-            
-            # --- (2) 固定元素長寬比：只允許等比例縮放（避免元素被壓成細條） ---
-            if args.fix_aspect:
-                bbox_fake = project_fixed_aspect_scale(
-                    bbox_fake, bbox_real, label, padding_mask,
-                    target_ids=(SVG_ID, TEXT_ID, IMG_ID),
-                )
 
             # --- (3) Face 永遠固定到 GT：不讓模型猜 Face 位置 ---
             if args.freeze_face:
@@ -764,7 +1116,7 @@ def main():
                       face_coverage_loss(bbox_fake, label, padding_mask, curr_lambda_face) + \
                       element_size_loss(bbox_fake, label, padding_mask, [IMG_ID], 0.35) + \
                       containment_loss(bbox_fake, label, padding_mask, lambda_cont=curr_lambda_cont) + \
-                      face_anchor_loss(bbox_fake, label, padding_mask, face_pos, face_mask, lambda_anchor=curr_lambda_anchor) + \
+                      face_anchor_loss_relative(bbox_fake, label, padding_mask, face_rel, face_mask, face2img, lambda_anchor=curr_lambda_anchor) + \
                       (loss_aspect * 100.0) + (loss_min_size * 100.0)
 
             loss_G.backward()
@@ -809,6 +1161,25 @@ def main():
                                 bbox_vis, fixed_pos, fixed_label, fixed_padding,
                                 target_ids=(SVG_ID, TEXT_ID, IMG_ID),
                             )
+
+                        # --- (HARD) VIS: Face 與 Image 硬耦合 (mapping 從 GT pos 推導) ---
+                        fixed_face2img = infer_face2img_from_reference(
+                            fixed_pos, fixed_label, fixed_padding,
+                            max_faces=4, contain_thr=0.98,
+                        )
+                        # fixed_face_mask：用 label/valid 推估（最多 4 張）
+                        fixed_face_mask_vis = torch.zeros((fixed_label.size(0), 4), device=device, dtype=torch.bool)
+                        vmask = ~fixed_padding
+                        for bb in range(fixed_label.size(0)):
+                            f_idx = torch.where((fixed_label[bb] == FACE_ID) & vmask[bb])[0]
+                            nf = min(int(f_idx.numel()), 4)
+                            if nf > 0:
+                                fixed_face_mask_vis[bb, :nf] = True
+                        bbox_vis = hard_couple_faces_to_images(
+                            bbox_vis, fixed_label, fixed_padding,
+                            face2img=fixed_face2img, face_mask=fixed_face_mask_vis,
+                        )
+
                         if args.freeze_face:
                             vmask = ~fixed_padding
                             face_m = (fixed_label == FACE_ID) & vmask
@@ -818,15 +1189,15 @@ def main():
                         if args.fix_aspect or args.freeze_face:
                             print("[WARN] fixed_sample 沒有 'pos'，預覽圖是 raw netG output（不含 fix_aspect / freeze_face）。")
 
-                    # 你最後不想畫 face：視覺化直接排除 face/bg/mask
-                    final_vis_mask = fixed_mask & (fixed_label != FACE_ID) & (fixed_label != BG_ID) & (fixed_label != MASK_ID)
+                    # 視覺化：保留 face（但仍排除 BG/MASK）
+                    final_vis_mask = fixed_mask & (fixed_label != BG_ID) & (fixed_label != MASK_ID)
 
                     vis_save_path = os.path.join(out_dir, f'fake_{iteration:05d}.png')
                     colors_pil = [tuple(int(x) for x in c) for c in train_dataset.colors]
                     final_vis_mask = final_vis_mask & (fixed_label < len(colors_pil))
 
                     save_image(bbox_vis, fixed_label, final_vis_mask, colors_pil, vis_save_path)
-                    print(f"===> 已儲存預覽圖 (不畫 face): {vis_save_path}")
+                    print(f"===> 已儲存預覽圖 (含 face): {vis_save_path}")
                 netG.train()
             iteration += 1
 

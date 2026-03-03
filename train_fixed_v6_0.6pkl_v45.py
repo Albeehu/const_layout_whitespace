@@ -1,5 +1,5 @@
-"""用 train_fixed_v6_0.6pkl_v41 改 v42
-    1. 修改 loss_style 的計算 才不會重疊
+"""用 train_fixed_v6_0.6pkl_v38 改 v40
+    1. 用fixed_sample_v46 因為 v45裡面沒有face
 """
 import os
 import csv
@@ -145,52 +145,66 @@ def box_area_xyxy(xyxy: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
 
 
 def project_fixed_aspect_scale(
-    bbox_pred: torch.Tensor,
-    bbox_ref: torch.Tensor,
-    label: torch.Tensor,
-    padding_mask: torch.Tensor,
-    target_ids=(SVG_ID, TEXT_ID, IMG_ID),
-    eps: float = 1e-6,
-    s_min: float = 0.25,
-    s_max: float = 4.0,
-) -> torch.Tensor:
-    """Fix aspect ratio to match bbox_ref, but allow uniform scaling to keep bbox_pred area.
-
-    bbox_pred, bbox_ref: (B, N, 4) in (cx, cy, w, h), normalized to [0,1]
-    padding_mask: (B, N) where True means padding (invalid)
-    Returns a new tensor (non-inplace) safe for autograd.
+    bbox_pred, bbox_ref, label, padding_mask,
+    target_ids=(2, 3, 4),   # 你自己對應：SVG/TEXT/IMG 的 id
+    eps=1e-6,
+):
     """
+    bbox_pred, bbox_ref: (B, N, 4) in (cx, cy, w, h) normalized to [0,1]
+    Return: same shape, but for target_ids keep aspect ratio from bbox_ref and only scale uniformly.
+    全程 non-inplace，避免 autograd 版本號錯誤。
+    """
+    B, N, _ = bbox_pred.shape
     device = bbox_pred.device
-    valid = ~padding_mask
 
-    tgt = torch.zeros_like(valid, dtype=torch.bool, device=device)
+    valid = ~padding_mask  # (B,N) bool
+    tgt = torch.zeros((B, N), device=device, dtype=torch.bool)
     for tid in target_ids:
-        tgt = tgt | ((label == tid) & valid)
+        tgt = tgt | ((label == tid) & valid)   # 非 inplace（不要用 |=）
 
-    if not tgt.any():
-        return bbox_pred
-
+    # clamp to avoid divide-by-zero
     w0 = bbox_ref[..., 2].clamp_min(eps)
     h0 = bbox_ref[..., 3].clamp_min(eps)
     w  = bbox_pred[..., 2].clamp_min(eps)
     h  = bbox_pred[..., 3].clamp_min(eps)
 
-    s = torch.sqrt((w * h) / (w0 * h0)).clamp(s_min, s_max)
-    w_new = (w0 * s).clamp(min=eps, max=1.0)
-    h_new = (h0 * s).clamp(min=eps, max=1.0)
+    # keep area of pred, but force aspect ratio of ref
+    s = torch.sqrt((w * h) / (w0 * h0))
+    w_new = w0 * s
+    h_new = h0 * s
 
     cx = bbox_pred[..., 0]
     cy = bbox_pred[..., 1]
-    replaced = torch.stack([cx, cy, w_new, h_new], dim=-1)
-    out = torch.where(tgt.unsqueeze(-1), replaced, bbox_pred)
 
-    half_w = out[..., 2] / 2.0
-    half_h = out[..., 3] / 2.0
-    cx2 = out[..., 0].clamp(half_w, 1.0 - half_w)
-    cy2 = out[..., 1].clamp(half_h, 1.0 - half_h)
-    return torch.stack([cx2, cy2, out[..., 2], out[..., 3]], dim=-1)
+    new_bbox = torch.stack([cx, cy, w_new, h_new], dim=-1)  # (B,N,4)
 
-def whitespace_style_loss(bbox_fake, label, padding_mask, wr_min=0.6, w_style=1.0, style_mode="max", style_tags=None):
+    # only replace target elements
+    bbox_out = torch.where(tgt.unsqueeze(-1), new_bbox, bbox_pred)
+    return bbox_out
+
+    w0 = bbox_ref[:, :, 2].clamp(min=eps)
+    h0 = bbox_ref[:, :, 3].clamp(min=eps)
+    w = bbox_pred[:, :, 2].clamp(min=eps)
+    h = bbox_pred[:, :, 3].clamp(min=eps)
+
+    s = torch.sqrt((w * h) / (w0 * h0)).clamp(min=0.25, max=4.0)
+    w_new = (w0 * s).clamp(min=eps, max=1.0)
+    h_new = (h0 * s).clamp(min=eps, max=1.0)
+
+    out = bbox_pred.clone()
+    out[:, :, 2] = torch.where(tgt, w_new, out[:, :, 2])
+    out[:, :, 3] = torch.where(tgt, h_new, out[:, :, 3])
+
+    # 讓中心點不超出邊界
+    half_w = out[:, :, 2] / 2.0
+    half_h = out[:, :, 3] / 2.0
+    cx = out[:, :, 0].clamp(half_w, 1.0 - half_w)
+    cy = out[:, :, 1].clamp(half_h, 1.0 - half_h)
+    out[:, :, 0] = cx
+    out[:, :, 1] = cy
+
+    return out
+def whitespace_style_loss(bbox_fake, padding_mask, wr_min=0.6, w_style=1.0, style_mode="max", style_tags=None):
     """
     多樣化留白風格分數（越小越好）：
       - style_mode="max": 舊行為，取 4 種風格中最容易達到的那個（容易導致風格單一）
@@ -209,8 +223,6 @@ def whitespace_style_loss(bbox_fake, label, padding_mask, wr_min=0.6, w_style=1.
 
     for b in range(B):
         valid = ~padding_mask[b]
-        # 只用排版元件計算留白風格：排除 Face / BG / Mask
-        valid = valid & (label[b] != FACE_ID) & (label[b] != BG_ID) & (label[b] != MASK_ID)
         if valid.sum() == 0:
             continue
 
@@ -451,8 +463,7 @@ def add_to_diag(mat: torch.Tensor, val: float) -> torch.Tensor:
         eye = eye.unsqueeze(0)
     return mat + eye * val
 
-def pairwise_overlap_loss(bbox_fake, label, padding_layout):
-    padding_mask = padding_layout
+def pairwise_overlap_loss(bbox_fake, label, padding_mask):
     device = bbox_fake.device
     W = torch.ones((10, 10), device=device)
     W[BG_ID, :], W[:, BG_ID], W[MASK_ID, :], W[:, MASK_ID] = 0.0, 0.0, 0.0, 0.0
@@ -532,7 +543,7 @@ def main():
     parser.add_argument('--vis_every', type=int, default=1000)
     parser.add_argument('--seed', type=int, default=None)
     parser.add_argument('--num_workers', type=int, default=4)
-    parser.add_argument('--fixed_sample', type=str, default='fixed_sample_v46.pt') # 確保檔名正確
+    parser.add_argument('--fixed_sample', type=str, default='fixed_sample_v45.pt') # 確保檔名正確
     parser.add_argument('--eval_every', type=int, default=10000)
     parser.add_argument('--G_d_model', type=int, default=256)
     parser.add_argument('--G_nhead', type=int, default=4)
@@ -551,7 +562,7 @@ def main():
     if not os.path.exists(occ_csv):
         with open(occ_csv, "w", newline="") as f:
             w = csv.writer(f)
-            w.writerow(["iter", "occ_ratio_mean", "occ_rate", "n_face_tokens", "n_occluder_tokens"])
+            w.writerow(["iter", "occ_ratio_mean", "occ_rate"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 資料載入
@@ -559,7 +570,7 @@ def main():
     train_dataset = get_dataset(args.dataset, 'train')
     
     # 2. 如果有生成的 pkl 資料，重新封裝
-    pkl_path = "/home/albee/const_layout_whitespace/data/dataset/crello/crello_train_ws_gt0.6_with_face.pkl"
+    pkl_path = "output/crello/LayoutGAN++/crello_ws_gt0_6/crello_ws_gt0_6_generated.pkl"
     if os.path.exists(pkl_path):
         with open(pkl_path, 'rb') as f: 
             high_quality_data = pickle.load(f)
@@ -578,6 +589,9 @@ def main():
     train_dataset.colors = [tuple(int(c) for c in color) for color in train_dataset.colors]
 
     # 確保這行在所有路徑下都會執行
+    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
+
+    # --- [關鍵修正 B：確保 dataloader 一定會被定義] ---
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
     # 模型初始化
     netG = Generator(args.latent_size, train_dataset.num_classes, d_model=args.G_d_model, nhead=args.G_nhead, num_layers=args.G_num_layers).to(device)
@@ -623,34 +637,21 @@ def main():
     else:
         print(f"===> 未找到預訓練模型，將從零開始訓練。")
 
-    
-    # === 固定樣本載入：建議使用含 pos 的 fixed_sample_v46.pt ===
-    fixed_path = 'fixed_sample_v46.pt'
+    # === 固定樣本載入 (v18 專用) ===
+    fixed_path = 'fixed_sample_v45.pt'
     if not os.path.exists(fixed_path):
-        print(f"致命錯誤：找不到 {fixed_path}。請先用 make_fixed_sample_v46.py 產生。")
+        print(f"致命錯誤：找不到 {fixed_path}。請先執行產生腳本產出二進位檔案。")
         exit()
 
+    # 確保使用 map_location 以相容不同設備
     ck = torch.load(fixed_path, weights_only=False, map_location=device)
+    fixed_label = ck['label'].to(device).round().long()   #  轉成整數 label
+    fixed_mask  = ck['mask'].to(device).bool()            # mask 轉 bool
+    fixed_z     = ck['z'].to(device).float()
 
-    fixed_label = ck['label'].to(device).round().long()   # (B,N)
-    fixed_mask  = ck['mask'].to(device).bool()            # (B,N) True=valid
-    fixed_z     = ck['z'].to(device).float()              # (B,N,latent)
-
-    fixed_pos = ck.get('pos', None)
-    if fixed_pos is not None:
-        fixed_pos = fixed_pos.to(device).float()
-
-    fixed_face_pos = ck.get('face_pos', None)
-    fixed_face_mask = ck.get('face_mask', None)
-    if fixed_face_pos is not None:
-        fixed_face_pos = fixed_face_pos.to(device).float()
-    if fixed_face_mask is not None:
-        fixed_face_mask = fixed_face_mask.to(device).bool()
-
-    tmp = fixed_label[fixed_mask].reshape(-1)
+    tmp = fixed_label[fixed_mask].reshape(-1)   # 用 tmp，不要回寫 fixed_label
     print("[fixed bincount]", torch.bincount(tmp, minlength=6).tolist())
-
-    # 你最後不想畫 face：視覺化時直接排除 FACE_ID
+    # Face 不作為 layout node：在視覺化時過濾掉 ID 5
     fixed_mask_noface = fixed_mask & (fixed_label != FACE_ID)
 
     optimizerG = optim.Adam(netG.parameters(), lr=args.lr)
@@ -684,7 +685,6 @@ def main():
                     bbox_fake = torch.where(img_fix_m.unsqueeze(-1), bbox_real, bbox_fake)
                     bbox_fake = torch.where(face_fix_m.unsqueeze(-1), bbox_real, bbox_fake)
 
-            
             # --- (2) 固定元素長寬比：只允許等比例縮放（避免元素被壓成細條） ---
             if args.fix_aspect:
                 bbox_fake = project_fixed_aspect_scale(
@@ -692,47 +692,71 @@ def main():
                     target_ids=(SVG_ID, TEXT_ID, IMG_ID),
                 )
 
-            # --- (3) Face 永遠固定到 GT：不讓模型猜 Face 位置 ---
+            
+                        # --- (3) Face 永遠固定到 GT：不讓模型猜 Face 位置 ---
             if args.freeze_face:
                 vmask = ~padding_mask
                 face_m = (label == FACE_ID) & vmask
                 if face_m.any():
                     bbox_fake = torch.where(face_m.unsqueeze(-1), bbox_real, bbox_fake)
-
-            # ---- Layout-only masking: D / align / overlap / style 都不看 Face/BG/Mask ----
-            ignore_layout = (label == FACE_ID) | (label == BG_ID) | (label == MASK_ID)
-            padding_layout = padding_mask | ignore_layout
-            layout_valid = ~padding_layout
-
-            # 1. 基礎對抗損失（D 不看 face/bg/mask）
-            loss_G_adv = F.softplus(-netD(bbox_fake, label, padding_layout)).mean()
+# 1. 基礎對抗損失
+            loss_G_adv = F.softplus(-netD(bbox_fake, label, padding_mask)).mean()
             loss_G = loss_G_adv
 
-            # --- [多樣化留白美學風格引導：用 margin-based style 分數(避免元素硬推到同一條線造成重疊)] ---
-            valid_mask = layout_valid
+            # --- [多樣化留白美學風格引導] ---
+            valid_mask = ~padding_mask
+            # 只讓「排版元件」參與風格/對齊：排除 Face / BG / Mask
+            layout_mask = mask & (label != FACE_ID) & (label != BG_ID) & (label != MASK_ID)
+            cx = bbox_fake[:, :, 0]
+            cy = bbox_fake[:, :, 1]
+            # --- [多樣化留白美學：風格選擇邏輯優化] ---
+            # 建議：利用 iteration 來控制風格區間，例如每 1000 步換一種主打風格
+            # 或是讓 batch 內分組進行，不要讓整個 batch 的目標雜亂
+            # 讓同一個 Batch 內同時出現 4 種風格，Discriminator 才會學會接受多樣性
             B = label.size(0)
-            # 0: frame / 1: side / 2: top-bottom / 3: corner(hybrid)
-            style_tags = torch.randint(0, 4, (B,), device=device)
+            style_tags = torch.randint(0, 4, (B,), device=device) if args.ws_style_mode == 'random' else (torch.arange(B, device=device) % 4)
+            
+            # --- [計算多樣化留白風格與一致性損失] ---
+            valid_mask = ~padding_mask
+            
+            # [修正點]：先定義座標變數，才能給後面的 Loss 使用
+            cx_f = bbox_fake[:, :, 0] # 中心 X
+            cy_f = bbox_fake[:, :, 1] # 中心 Y
+            # 計算左邊界 x1 = cx - w/2
+            x1_f = (cx_f - bbox_fake[:, :, 2] / 2).clamp(0, 1)
+            # 計算右邊界 x2 = cx + w/2
+            x2_f = (cx_f + bbox_fake[:, :, 2] / 2).clamp(0, 1)
+            # 計算頂邊 y1 = cy - h/2
+            y1_f = (cy_f - bbox_fake[:, :, 3] / 2).clamp(0, 1)
+            # 計算底邊 y2 = cy + h/2
+            y2_f = (cy_f + bbox_fake[:, :, 3] / 2).clamp(0, 1)
 
-            # style loss warmup：先讓 G 學會基本布局(不重疊/不崩壞)再開始強推風格
-            curr_lambda_style = args.lambda_style * min(1.0, max(0.0, (iteration - 5000) / 5000.0))
-            if curr_lambda_style > 0:
-                loss_style = whitespace_style_loss(
-                    bbox_fake,
-                    label,
-                    padding_layout,
-                    wr_min=args.wr_min,
-                    style_mode="random",
-                    style_tags=style_tags,
-                )
-                loss_G += (loss_style * curr_lambda_style)
+            # 隨機或循環選擇風格 (例如 style_idx = (iteration // 2000) % 4)
+            style_idx = (iteration // 2000) % 4 
+            loss_style = torch.tensor(0.0, device=device)
+
+            if layout_mask.any():
+                if style_idx == 0: # Style A: 右靠 (左側留白)
+                    loss_style = torch.abs(x2_f[layout_mask] - 0.85).mean()
+                elif style_idx == 1: # Style B: 置中
+                    loss_style = torch.abs(cx_f[layout_mask] - 0.5).mean()
+                elif style_idx == 2: # Style C: 上下
+                    img_m = (label == IMG_ID) & layout_mask
+                    txt_m = (label == TEXT_ID) & layout_mask
+                    if img_m.any() and txt_m.any():
+                        loss_style = torch.abs(y1_f[img_m] - 0.2).mean() + torch.abs(y2_f[txt_m] - 0.8).mean()
+                elif style_idx == 3: # Style D: 角落
+                    loss_style = torch.abs(x2_f[layout_mask] - 0.95).mean() + torch.abs(y2_f[layout_mask] - 0.95).mean()
+
+            curr_lambda_style = args.lambda_style * min(1.0, max(0.0, (iteration - 2000) / 3000.0))
+            loss_G += (loss_style * curr_lambda_style)
             # --- [對齊 loss：避免用 std 造成塌縮，改用 grid 吸附(只對非 face 元件)] ---
             curr_lambda_align = args.lambda_align * min(1.0, max(0.0, (iteration - args.align_start) / max(1.0, float(args.align_warmup))))
             if curr_lambda_align > 0:
                 loss_G += grid_alignment_loss_xy(
                     bbox_fake,
                     label,
-                    padding_layout,
+                    padding_mask,
                     lambda_grid=curr_lambda_align,
                     target_ids=(SVG_ID, TEXT_ID, IMG_ID),
                 )
@@ -754,13 +778,16 @@ def main():
             aspect_ratio = fake_wh[:, 0] / (fake_wh[:, 1] + 1e-6)
             loss_aspect = (torch.relu(aspect_ratio - 8.0) + torch.relu(0.125 - aspect_ratio)).mean()
             loss_min_size = torch.relu(0.05 - (fake_wh[:, 0] * fake_wh[:, 1])).mean()
+            
+            curr_lambda_ws = args.lambda_ws * min(1.0, max(0.0, (iteration - 5000) / 5000.0))
             curr_lambda_ov = min(args.lambda_ov, args.lambda_ov * (iteration / 5000.0))
 
             curr_lambda_face = args.lambda_face * min(1.0, max(0.0, (iteration - args.face_start) / max(1.0, float(args.face_warmup))))
             curr_lambda_cont = args.lambda_cont * min(1.0, max(0.0, (iteration - args.cont_start) / max(1.0, float(args.cont_warmup))))
             curr_lambda_anchor = args.lambda_anchor * min(1.0, max(0.0, (iteration - args.anchor_start) / max(1.0, float(args.anchor_warmup))))
 
-            loss_G += (curr_lambda_ov * pairwise_overlap_loss(bbox_fake, label, padding_layout)) + \
+            loss_G += (curr_lambda_ws * whitespace_style_loss(bbox_fake, padding_mask, wr_min=args.wr_min, style_mode=args.ws_style_mode, style_tags=style_tags)) + \
+                      (curr_lambda_ov * pairwise_overlap_loss(bbox_fake, label, padding_mask)) + \
                       face_coverage_loss(bbox_fake, label, padding_mask, curr_lambda_face) + \
                       element_size_loss(bbox_fake, label, padding_mask, [IMG_ID], 0.35) + \
                       containment_loss(bbox_fake, label, padding_mask, lambda_cont=curr_lambda_cont) + \
@@ -772,61 +799,45 @@ def main():
 
             # Update D
             netD.zero_grad()
-            loss_D = F.softplus(netD(bbox_fake.detach(), label, padding_layout)).mean() + \
-                     F.softplus(-netD(bbox_real, label, padding_layout)).mean()
+            loss_D = F.softplus(netD(bbox_fake.detach(), label, padding_mask)).mean() + \
+                     F.softplus(-netD(bbox_real, label, padding_mask)).mean()
             loss_D.backward(); optimizerD.step()
 
             if iteration % 100 == 0:
-                vmask = ~padding_mask
-                n_face = int(((label == FACE_ID) & vmask).sum().item())
-                n_occ  = int((((label == TEXT_ID) | (label == SVG_ID) | (label == MASK_ID)) & vmask).sum().item())
-                print("[debug unique labels in batch]", torch.unique(label[~padding_mask]).tolist())
-                print(f"[occ debug] iter={iteration} n_face_tokens={n_face} n_occluder_tokens={n_occ}")
-
                 with torch.no_grad():
                     occ_ratio, occ_rate = face_occlusion_stats(bbox_fake, label, padding_mask, thr=0.01)
-                    occ_ratio_mean = occ_ratio
+                    occ_ratio_mean = occ_ratio  # 保留你想匯出的欄位命名
+                writer.add_scalar('train/face_occlusion_ratio', float(occ_ratio.item()), iteration)
+                writer.add_scalar('train/face_occluded_rate', float(occ_rate.item()), iteration)
 
+                # append to CSV for offline analysis
                 with open(occ_csv, "a", newline="") as f:
                     w = csv.writer(f)
-                    w.writerow([iteration, float(occ_ratio_mean.item()), float(occ_rate.item()), n_face, n_occ])
+                    w.writerow([iteration, float(occ_ratio_mean.item()), float(occ_rate.item())])
 
                 print(f'[{iteration}] Loss_D: {loss_D.item():.4f} Loss_G: {loss_G.item():.4f} '
-                      f'STYLE:{curr_lambda_style:.3f} OV:{curr_lambda_ov:.3f} ALIGN:{curr_lambda_align:.3f} '
+                      f'WS:{curr_lambda_ws:.3f} OV:{curr_lambda_ov:.3f} ALIGN:{curr_lambda_align:.3f} '
                       f'FACE:{curr_lambda_face:.3f} CONT:{curr_lambda_cont:.1f} ANCH:{curr_lambda_anchor:.1f} '
                       f'OCC:{occ_ratio.item():.3f} OCC_RATE:{occ_rate.item():.2f}')
 
             if iteration % args.vis_every == 0:
                 netG.eval()
                 with torch.no_grad():
-                    fixed_padding = ~fixed_mask  # True = padding
-                    bbox_vis = torch.clamp(netG(fixed_z, fixed_label, fixed_padding), 0, 1)
-
-                    # 若 fixed_sample 有 pos，套用與訓練一致的 post-process（讓預覽更可信）
-                    if fixed_pos is not None:
-                        if args.fix_aspect:
-                            bbox_vis = project_fixed_aspect_scale(
-                                bbox_vis, fixed_pos, fixed_label, fixed_padding,
-                                target_ids=(SVG_ID, TEXT_ID, IMG_ID),
-                            )
-                        if args.freeze_face:
-                            vmask = ~fixed_padding
-                            face_m = (fixed_label == FACE_ID) & vmask
-                            if face_m.any():
-                                bbox_vis = torch.where(face_m.unsqueeze(-1), fixed_pos, bbox_vis)
-                    else:
-                        if args.fix_aspect or args.freeze_face:
-                            print("[WARN] fixed_sample 沒有 'pos'，預覽圖是 raw netG output（不含 fix_aspect / freeze_face）。")
-
-                    # 你最後不想畫 face：視覺化直接排除 face/bg/mask
-                    final_vis_mask = fixed_mask & (fixed_label != FACE_ID) & (fixed_label != BG_ID) & (fixed_label != MASK_ID)
-
+                    # 生成時傳入完整的 fixed_mask，讓模型感知人臉位置
+                    bbox_vis = torch.clamp(netG(fixed_z, fixed_label, ~fixed_mask), 0, 1)
+                    
+                    # 建立視覺化遮罩：保留 ID 0-2 與 ID 5 (Face)，排除 3 與 4
+                    final_vis_mask = fixed_mask.clone()
+                    final_vis_mask = fixed_mask & (fixed_label != BG_ID) & (fixed_label != MASK_ID) & (fixed_label != FACE_ID)
+                    
                     vis_save_path = os.path.join(out_dir, f'fake_{iteration:05d}.png')
+                    
                     colors_pil = [tuple(int(x) for x in c) for c in train_dataset.colors]
-                    final_vis_mask = final_vis_mask & (fixed_label < len(colors_pil))
-
+                    #final_vis_mask = final_vis_mask & (fixed_label < len(colors_pil))
+                    colors_pil = [tuple(int(x) for x in c) for c in train_dataset.colors]
                     save_image(bbox_vis, fixed_label, final_vis_mask, colors_pil, vis_save_path)
-                    print(f"===> 已儲存預覽圖 (不畫 face): {vis_save_path}")
+
+                    print(f"===> 已儲存預覽圖 (成功包含人臉框): {vis_save_path}")
                 netG.train()
             iteration += 1
 

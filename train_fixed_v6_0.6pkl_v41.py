@@ -1,4 +1,4 @@
-"""用 train_fixed_v6_0.6pkl_v38 改 v40
+"""用 train_fixed_v6_0.6pkl_v40 改 v41
     1. 修改 loss_style 的計算 才不會重疊
 """
 import os
