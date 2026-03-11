@@ -1,5 +1,5 @@
-"""用 train_fixed_v6_0.6pkl_v44 改 v45
-    1. 真正加入dataset翻轉
+"""用 train_fixed_v6_0.6pkl_v46 改 v47
+    1. 改成訓練時用all crello, high quality crello, 60% whitespace crello
 """
 import os
 import csv
@@ -31,6 +31,11 @@ IMG_ID = 2   # 圖片元素容器
 BG_ID = 3    # 背景
 MASK_ID = 4  # 遮罩
 FACE_ID = 5
+
+# ===== 固定使用的訓練 PKL 路徑 =====
+PKL_PATH_CRELLO_FULL = "/home/albee/const_layout_whitespace/data/dataset/crello/crello_train_all.pkl"
+PKL_PATH_HIGH_QUALITY = "/home/albee/const_layout_whitespace/data/dataset/crello/high_quality.pkl"
+PKL_PATH_WS_60 = "/home/albee/const_layout_whitespace/data/dataset/crello/crello_train_ws_gt0.6_with_face.pkl"
 
 def seed_worker(worker_id: int):
     """Ensure numpy/random have different seeds across DataLoader workers.
@@ -256,6 +261,63 @@ class RawLayoutDataset(torch.utils.data.Dataset):
             'face2img': face2img,
             'face_mask': face_mask,
         }
+
+
+class WeightedMixedRawDataset(torch.utils.data.Dataset):
+    """
+    將多個 pkl dataset 混合成單一訓練集，並用 source_weights 控制被抽到的機率。
+
+    使用方式：
+      - datasets: list[RawLayoutDataset]
+      - source_weights: 與 datasets 等長，例如 [0.3, 0.3, 0.4]
+      - epoch_size: 每個 epoch 視為有多少筆 sample
+
+    注意：
+      1) __len__ 不再等於真實資料總數，而是你想要每個 epoch 抽幾筆。
+      2) 每次 __getitem__ 都會先依權重抽 dataset，再從該 dataset 隨機抽一筆。
+      3) 這樣可以避免完整 crello.pkl 數量太大，直接把 high_quality / 60%_ws 淹沒掉。
+    """
+    def __init__(self, datasets, source_weights, epoch_size=50000, seed=None):
+        assert len(datasets) > 0, "datasets 不能是空的"
+        assert len(datasets) == len(source_weights), "datasets 跟 source_weights 長度必須一致"
+
+        self.datasets = datasets
+        self.lengths = [len(ds) for ds in datasets]
+        self.epoch_size = int(epoch_size)
+        self.seed = seed
+
+        w = np.asarray(source_weights, dtype=np.float64)
+        if np.any(w < 0):
+            raise ValueError(f"source_weights 不能有負數: {source_weights}")
+        if np.allclose(w.sum(), 0.0):
+            raise ValueError("source_weights 總和不能是 0")
+        self.source_weights = (w / w.sum()).astype(np.float64)
+
+        # 直接沿用第一個 dataset 的 metadata 給外部使用
+        self.num_classes = datasets[0].num_classes
+        self.colors = getattr(datasets[0], 'colors', None)
+
+        # 若指定 seed，建立自己的 RNG；否則走全域 np.random
+        self.rng = np.random.default_rng(seed) if seed is not None else None
+
+    def __len__(self):
+        return self.epoch_size
+
+    def _randint(self, low, high):
+        if self.rng is not None:
+            return int(self.rng.integers(low, high))
+        return int(np.random.randint(low, high))
+
+    def _choice_dataset(self):
+        if self.rng is not None:
+            return int(self.rng.choice(len(self.datasets), p=self.source_weights))
+        return int(np.random.choice(len(self.datasets), p=self.source_weights))
+
+    def __getitem__(self, idx):
+        ds_idx = self._choice_dataset()
+        sample_idx = self._randint(0, self.lengths[ds_idx])
+        return self.datasets[ds_idx][sample_idx]
+
 
 
 def xywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
@@ -853,6 +915,13 @@ def main():
     parser.add_argument('--name', type=str, default='v13_ft')
     parser.add_argument('--occ_thresh', type=float, default=0.01)
     parser.add_argument('--dataset', type=str, default='crello')
+    parser.add_argument('--mix_weights', type=float, nargs=3, default=[1.0, 1.0, 1.0],
+                        metavar=('W_CRELLO', 'W_HQ', 'W_WS60'),
+                        help='三個固定 pkl 的抽樣權重：crello.pkl、high_quality.pkl、60%_ws.pkl，例如 0.4 0.3 0.3')
+    parser.add_argument('--mix_epoch_size', type=int, default=50000,
+                        help='混合資料集每個 epoch 視為多少筆樣本')
+    parser.add_argument('--single_pkl', type=int, default=0,
+                        help='1=不要混合，僅使用 PKL_PATH_WS_60；0=使用三個固定 pkl 混合訓練')
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--iteration', type=int, default=100000)
     parser.add_argument('--lr', type=float, default=5e-6)
@@ -914,21 +983,57 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 資料載入
-    # 1. 獲取原始 dataset
-    train_dataset = get_dataset(args.dataset, 'train')
-    
-    # 2. 如果有生成的 pkl 資料，重新封裝
-    pkl_path = "/home/albee/const_layout_whitespace/data/dataset/crello/crello_train_ws_gt0.6_with_face.pkl"
-    if os.path.exists(pkl_path):
-        with open(pkl_path, 'rb') as f: 
-            high_quality_data = pickle.load(f)
-        train_dataset = RawLayoutDataset(
-            high_quality_data,
-            num_classes=train_dataset.num_classes,
-            colors=train_dataset.colors,
+    base_dataset = get_dataset(args.dataset, 'train')
+
+    def _build_raw_dataset_from_pkl(pkl_path: str):
+        with open(pkl_path, 'rb') as f:
+            data_list = pickle.load(f)
+        return RawLayoutDataset(
+            data_list,
+            num_classes=base_dataset.num_classes,
+            colors=base_dataset.colors,
             aug_hflip=args.aug_flip,
             aug_vflip=args.aug_vflip,
             flip_prob=args.flip_prob,
+        )
+
+    # 預設沿用原本單一資料集行為
+    train_dataset = base_dataset
+
+    # 固定三個 pkl 路徑；下參數時只需要給權重
+    fixed_mix_pkls = [
+        PKL_PATH_CRELLO_FULL,
+        PKL_PATH_HIGH_QUALITY,
+        PKL_PATH_WS_60,
+    ]
+
+    if len(args.mix_weights) != 3:
+        raise ValueError(f'--mix_weights 必須剛好給 3 個值，目前收到 {len(args.mix_weights)} 個')
+
+    if args.single_pkl == 1:
+        pkl_path = PKL_PATH_WS_60
+        if not os.path.exists(pkl_path):
+            raise FileNotFoundError(f'找不到 pkl: {pkl_path}')
+        train_dataset = _build_raw_dataset_from_pkl(pkl_path)
+        print(f"[Single PKL] loaded: {pkl_path} (n={len(train_dataset)})")
+    else:
+        mixed_datasets = []
+        for pkl_path in fixed_mix_pkls:
+            if not os.path.exists(pkl_path):
+                raise FileNotFoundError(f'找不到 pkl: {pkl_path}')
+            ds = _build_raw_dataset_from_pkl(pkl_path)
+            mixed_datasets.append(ds)
+            print(f"[MIX] loaded: {pkl_path} (n={len(ds)})")
+
+        train_dataset = WeightedMixedRawDataset(
+            mixed_datasets,
+            source_weights=args.mix_weights,
+            epoch_size=args.mix_epoch_size,
+            seed=args.seed,
+        )
+        print(
+            f"[MIX] pkl order=[crello.pkl, high_quality.pkl, crello_train_ws_gt0.6_with_face.pkl] "
+            f"weights={train_dataset.source_weights.tolist()} epoch_size={len(train_dataset)}"
         )
     
     # 強制使用標準 RGB 整數，解決 TypeError
@@ -1120,7 +1225,7 @@ def main():
                     label,
                     padding_layout,
                     lambda_grid=curr_lambda_align,
-                    target_ids=(SVG_ID, TEXT_ID, IMG_ID),
+                    target_ids=(TEXT_ID, IMG_ID),
                 )
             # 4. [圖片面積與形狀保護]
             img_mask = (label == IMG_ID) & valid_mask
@@ -1131,15 +1236,23 @@ def main():
 
             text_mask = (label == TEXT_ID) & valid_mask
             if text_mask.any():
-                # 文字寬度保護，防止變成細線
-                loss_text_width = torch.relu(0.25 - bbox_fake[text_mask][:, 2]).mean()
-                loss_G += (loss_text_width * 100.0)
+                text_w = bbox_fake[text_mask][:, 2]
+
+                # 不要太窄
+                loss_text_too_narrow = torch.relu(0.12 - text_w)
+
+                # 不要太寬：避免一條橫向佔滿版面
+                loss_text_too_wide = torch.relu(text_w - 0.55)
+
+                # 寬度落在中間區間最好
+                loss_text_width = loss_text_too_narrow.mean() * 40.0 + loss_text_too_wide.mean() * 80.0
+                loss_G += loss_text_width
 
             # 5. [其餘幾何損失加總]
             fake_wh = bbox_fake[valid_mask][:, 2:]
             aspect_ratio = fake_wh[:, 0] / (fake_wh[:, 1] + 1e-6)
             loss_aspect = (torch.relu(aspect_ratio - 8.0) + torch.relu(0.125 - aspect_ratio)).mean()
-            loss_min_size = torch.relu(0.05 - (fake_wh[:, 0] * fake_wh[:, 1])).mean()
+            loss_min_size = torch.relu(0.02 - (fake_wh[:, 0] * fake_wh[:, 1])).mean()
             curr_lambda_ov = min(args.lambda_ov, args.lambda_ov * (iteration / 5000.0))
 
             curr_lambda_face = args.lambda_face * min(1.0, max(0.0, (iteration - args.face_start) / max(1.0, float(args.face_warmup))))

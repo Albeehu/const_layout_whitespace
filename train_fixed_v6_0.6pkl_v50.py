@@ -1,5 +1,14 @@
-"""用 train_fixed_v6_0.6pkl_v44 改 v45
-    1. 真正加入dataset翻轉
+"""用 train_fixed_v6_0.6pkl_v49 改 v50
+    1. 加上--layout_template：top_hero / center_vertical / right_column / bottom_caption
+    poster_template_loss
+    template-aware 的 style_tags
+    template-aware 的 grid_alignment_loss_xy
+    --max_nodes、--max_faces
+    _build_raw_dataset_from_pkl() 真的會吃到 max_nodes/max_faces
+    top_hero 允許更寬的大標題文字
+    fixed_sample 改成真的使用 args.fixed_sample
+    2. --single pkl用來決定是否合用資料集
+    3. fixed_sample改成 fixed_sample_v48_n6.pt
 """
 import os
 import csv
@@ -31,6 +40,11 @@ IMG_ID = 2   # 圖片元素容器
 BG_ID = 3    # 背景
 MASK_ID = 4  # 遮罩
 FACE_ID = 5
+
+# ===== 固定使用的訓練 PKL 路徑 =====
+PKL_PATH_CRELLO_FULL = "/home/albee/const_layout_whitespace/data/dataset/crello/crello_train_all.pkl"
+PKL_PATH_HIGH_QUALITY = "/home/albee/const_layout_whitespace/data/dataset/crello/high_quality.pkl"
+PKL_PATH_WS_60 = "/home/albee/const_layout_whitespace/data/dataset/crello/crello_train_ws_gt0.6_with_face.pkl"
 
 def seed_worker(worker_id: int):
     """Ensure numpy/random have different seeds across DataLoader workers.
@@ -256,6 +270,63 @@ class RawLayoutDataset(torch.utils.data.Dataset):
             'face2img': face2img,
             'face_mask': face_mask,
         }
+
+
+class WeightedMixedRawDataset(torch.utils.data.Dataset):
+    """
+    將多個 pkl dataset 混合成單一訓練集，並用 source_weights 控制被抽到的機率。
+
+    使用方式：
+      - datasets: list[RawLayoutDataset]
+      - source_weights: 與 datasets 等長，例如 [0.3, 0.3, 0.4]
+      - epoch_size: 每個 epoch 視為有多少筆 sample
+
+    注意：
+      1) __len__ 不再等於真實資料總數，而是你想要每個 epoch 抽幾筆。
+      2) 每次 __getitem__ 都會先依權重抽 dataset，再從該 dataset 隨機抽一筆。
+      3) 這樣可以避免完整 crello.pkl 數量太大，直接把 high_quality / 60%_ws 淹沒掉。
+    """
+    def __init__(self, datasets, source_weights, epoch_size=50000, seed=None):
+        assert len(datasets) > 0, "datasets 不能是空的"
+        assert len(datasets) == len(source_weights), "datasets 跟 source_weights 長度必須一致"
+
+        self.datasets = datasets
+        self.lengths = [len(ds) for ds in datasets]
+        self.epoch_size = int(epoch_size)
+        self.seed = seed
+
+        w = np.asarray(source_weights, dtype=np.float64)
+        if np.any(w < 0):
+            raise ValueError(f"source_weights 不能有負數: {source_weights}")
+        if np.allclose(w.sum(), 0.0):
+            raise ValueError("source_weights 總和不能是 0")
+        self.source_weights = (w / w.sum()).astype(np.float64)
+
+        # 直接沿用第一個 dataset 的 metadata 給外部使用
+        self.num_classes = datasets[0].num_classes
+        self.colors = getattr(datasets[0], 'colors', None)
+
+        # 若指定 seed，建立自己的 RNG；否則走全域 np.random
+        self.rng = np.random.default_rng(seed) if seed is not None else None
+
+    def __len__(self):
+        return self.epoch_size
+
+    def _randint(self, low, high):
+        if self.rng is not None:
+            return int(self.rng.integers(low, high))
+        return int(np.random.randint(low, high))
+
+    def _choice_dataset(self):
+        if self.rng is not None:
+            return int(self.rng.choice(len(self.datasets), p=self.source_weights))
+        return int(np.random.choice(len(self.datasets), p=self.source_weights))
+
+    def __getitem__(self, idx):
+        ds_idx = self._choice_dataset()
+        sample_idx = self._randint(0, self.lengths[ds_idx])
+        return self.datasets[ds_idx][sample_idx]
+
 
 
 def xywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
@@ -749,9 +820,15 @@ def pairwise_overlap_loss(bbox_fake, label, padding_layout, big_img_thr: float =
     W = torch.ones((10, 10), device=device)
     W[BG_ID, :], W[:, BG_ID], W[MASK_ID, :], W[:, MASK_ID] = 0.0, 0.0, 0.0, 0.0
     W[IMG_ID, FACE_ID], W[FACE_ID, IMG_ID] = 0.0, 0.0
-    W[IMG_ID, IMG_ID] = 3.0  # 讓 Image-Image 重疊更明顯被懲罰（可再調）
-    # 避免雙重懲罰：face_coverage_loss 已經在管文字壓臉
-    W[TEXT_ID, TEXT_ID], W[TEXT_ID, FACE_ID], W[FACE_ID, TEXT_ID] = 10.0, 25.0, 25.0
+    W[IMG_ID, IMG_ID] = 4.0
+
+    # 強化你真正在意的物件不重疊
+    W[TEXT_ID, TEXT_ID] = 20.0
+    W[TEXT_ID, FACE_ID], W[FACE_ID, TEXT_ID] = 25.0, 25.0
+    W[TEXT_ID, IMG_ID], W[IMG_ID, TEXT_ID] = 12.0, 12.0
+    W[TEXT_ID, SVG_ID], W[SVG_ID, TEXT_ID] = 14.0, 14.0
+    W[SVG_ID, SVG_ID] = 6.0
+    W[IMG_ID, SVG_ID], W[SVG_ID, IMG_ID] = 4.0, 4.0
 
     losses = []
     for b in range(bbox_fake.size(0)):
@@ -765,7 +842,7 @@ def pairwise_overlap_loss(bbox_fake, label, padding_layout, big_img_thr: float =
         inter = box_intersection_area_xyxy(xyxy, xyxy)
         n = inter.size(0)
         eye = torch.eye(n, device=inter.device, dtype=inter.dtype)
-        inter = inter * (1.0 - eye)   # 不用 fill_diagonal_，避免 inplace
+        inter = inter * (1.0 - eye)
 
         area = box_area_xyxy(xyxy, eps=1e-4)
         denom = torch.minimum(area[:, None], area[None, :]).clamp(min=1e-4)
@@ -782,6 +859,170 @@ def pairwise_overlap_loss(bbox_fake, label, padding_layout, big_img_thr: float =
         losses.append(loss_b / ((valid.sum() * (valid.sum() - 1)) / 2).clamp(min=1))
 
     return torch.stack(losses).mean() if losses else torch.tensor(0.0, device=device)
+
+
+def local_spacing_loss(
+    bbox_fake: torch.Tensor,
+    label: torch.Tensor,
+    padding_layout: torch.Tensor,
+    min_gap: float = 0.04,
+    big_img_thr: float = 0.90,
+):
+    """Penalize pairs that are too close even when they do not overlap.
+
+    This complements pairwise_overlap_loss:
+      - overlap_loss handles actual intersection
+      - local_spacing_loss keeps text / svg / image blocks from hugging each other
+    """
+    device = bbox_fake.device
+    padding_mask = padding_layout
+
+    G = torch.zeros((10, 10), device=device)
+    G[TEXT_ID, TEXT_ID] = 1.00
+    G[TEXT_ID, IMG_ID] = G[IMG_ID, TEXT_ID] = 0.90
+    G[TEXT_ID, SVG_ID] = G[SVG_ID, TEXT_ID] = 1.00
+    G[SVG_ID, SVG_ID] = 0.70
+    G[IMG_ID, IMG_ID] = 0.35
+    G[IMG_ID, SVG_ID] = G[SVG_ID, IMG_ID] = 0.50
+
+    losses = []
+    for b in range(bbox_fake.size(0)):
+        valid = ~padding_mask[b]
+        if valid.sum() <= 1:
+            continue
+
+        xyxy = xywh_to_xyxy(bbox_fake[b][valid])
+        labs = label[b][valid]
+        x1, y1, x2, y2 = xyxy.unbind(-1)
+        n = xyxy.size(0)
+
+        dx = torch.maximum(x1[None, :] - x2[:, None], x1[:, None] - x2[None, :]).clamp(min=0.0)
+        dy = torch.maximum(y1[None, :] - y2[:, None], y1[:, None] - y2[None, :]).clamp(min=0.0)
+        edge_gap = torch.sqrt(dx * dx + dy * dy + 1e-12)
+
+        inter = box_intersection_area_xyxy(xyxy, xyxy)
+        eye = torch.eye(n, device=device, dtype=inter.dtype)
+        inter = inter * (1.0 - eye)
+        non_overlap = (inter <= 1e-8).to(edge_gap.dtype)
+
+        area = box_area_xyxy(xyxy, eps=1e-4)
+        is_img = (labs == IMG_ID)
+        is_big_img = is_img & (area >= big_img_thr)
+        allow_img_img = (is_img[:, None] & is_img[None, :]) & (is_big_img[:, None] | is_big_img[None, :])
+
+        weights = G[labs[:, None], labs[None, :]]
+        gap_penalty = torch.relu(min_gap - edge_gap)
+        pair_penalty = gap_penalty * weights * non_overlap * (~allow_img_img).to(gap_penalty.dtype)
+
+        num_pairs = (n * (n - 1)) / 2
+        losses.append(pair_penalty.triu(1).sum() / max(num_pairs, 1))
+
+    return torch.stack(losses).mean() if losses else torch.tensor(0.0, device=device)
+
+
+def poster_template_loss(
+    bbox_fake: torch.Tensor,
+    label: torch.Tensor,
+    padding_layout: torch.Tensor,
+    template: str = "center_vertical",
+    lambda_template: float = 20.0,
+):
+    """Soft poster-template constraints for several poster layout families.
+
+    The goal is not to force a fixed token order, but to bias the overall
+    geometric distribution toward a chosen poster template.
+    """
+    device = bbox_fake.device
+    losses = []
+
+    for b in range(bbox_fake.size(0)):
+        valid = ~padding_layout[b]
+        if valid.sum() == 0:
+            continue
+
+        boxes = bbox_fake[b]
+        text_m = (label[b] == TEXT_ID) & valid
+        img_m = (label[b] == IMG_ID) & valid
+        svg_m = (label[b] == SVG_ID) & valid
+        graphic_m = img_m | svg_m
+
+        xyxy_all = xywh_to_xyxy(boxes[valid])
+        x1_all, y1_all, x2_all, y2_all = xyxy_all.unbind(-1)
+
+        loss_b = torch.tensor(0.0, device=device)
+
+        if template == "center_vertical":
+            valid_boxes = boxes[valid]
+            if valid_boxes.size(0) > 1:
+                order = torch.argsort(valid_boxes[:, 1])
+                sorted_xyxy = xywh_to_xyxy(valid_boxes[order])
+                gaps = sorted_xyxy[1:, 1] - sorted_xyxy[:-1, 3]
+                loss_b += torch.relu(0.035 - gaps).mean() * 2.0
+
+            if text_m.any():
+                loss_b += ((boxes[text_m][:, 0] - 0.50) ** 2).mean() * 2.5
+                loss_b += torch.relu(boxes[text_m][:, 2] - 0.38).mean() * 1.2
+
+            if graphic_m.any():
+                loss_b += ((boxes[graphic_m][:, 0] - 0.50) ** 2).mean() * 1.2
+
+            left_margin = x1_all.min()
+            right_margin = 1.0 - x2_all.max()
+            loss_b += ((left_margin - right_margin) ** 2) * 1.5
+
+        elif template == "right_column":
+            if text_m.any():
+                loss_b += ((boxes[text_m][:, 0] - 0.76) ** 2).mean() * 2.8
+                loss_b += torch.relu(boxes[text_m][:, 2] - 0.34).mean() * 1.0
+
+            if graphic_m.any():
+                loss_b += ((boxes[graphic_m][:, 0] - 0.72) ** 2).mean() * 0.8
+
+            loss_b += torch.relu(0.30 - x1_all.min()) * 3.0
+            right_margin = 1.0 - x2_all.max()
+            loss_b += torch.relu(0.04 - right_margin) * 2.0
+
+        elif template == "top_hero":
+            if img_m.any():
+                img_boxes = boxes[img_m]
+                img_areas = img_boxes[:, 2] * img_boxes[:, 3]
+                k = torch.argmax(img_areas)
+                main_img = img_boxes[k]
+                main_area = img_areas[k]
+
+                loss_b += ((main_img[0] - 0.50) ** 2) * 1.2
+                loss_b += ((main_img[1] - 0.64) ** 2) * 2.0
+                loss_b += torch.relu(0.20 - main_area) * 4.0
+
+            if text_m.any():
+                cy = boxes[text_m][:, 1]
+                d_top = torch.abs(cy - 0.14)
+                d_mid = torch.abs(cy - 0.43)
+                loss_b += torch.minimum(d_top, d_mid).mean() * 1.2
+
+            loss_b += torch.relu(0.12 - y1_all.min()) * 1.5
+
+        elif template == "bottom_caption":
+            if img_m.any():
+                img_boxes = boxes[img_m]
+                img_areas = img_boxes[:, 2] * img_boxes[:, 3]
+                k = torch.argmax(img_areas)
+                main_img = img_boxes[k]
+                main_area = img_areas[k]
+
+                loss_b += ((main_img[0] - 0.50) ** 2) * 1.0
+                loss_b += ((main_img[1] - 0.42) ** 2) * 2.0
+                loss_b += torch.relu(0.18 - main_area) * 4.0
+
+            if text_m.any():
+                loss_b += torch.relu(0.68 - boxes[text_m][:, 1]).mean() * 2.5
+
+        losses.append(loss_b)
+
+    if not losses:
+        return torch.tensor(0.0, device=device)
+    return lambda_template * torch.stack(losses).mean()
+
 
 def face_anchor_loss_relative(bbox_fake, label, padding_mask, face_rel, face_mask, face2img, lambda_anchor=50.0):
     """
@@ -853,7 +1094,16 @@ def main():
     parser.add_argument('--name', type=str, default='v13_ft')
     parser.add_argument('--occ_thresh', type=float, default=0.01)
     parser.add_argument('--dataset', type=str, default='crello')
+    parser.add_argument('--mix_weights', type=float, nargs=3, default=[1.0, 1.0, 1.0],
+                        metavar=('W_CRELLO', 'W_HQ', 'W_WS60'),
+                        help='三個固定 pkl 的抽樣權重：crello.pkl、high_quality.pkl、60%_ws.pkl，例如 0.4 0.3 0.3')
+    parser.add_argument('--mix_epoch_size', type=int, default=50000,
+                        help='混合資料集每個 epoch 視為多少筆樣本')
+    parser.add_argument('--single_pkl', type=int, default=0,
+                        help='1=不要混合，僅使用 PKL_PATH_WS_60；0=使用三個固定 pkl 混合訓練')
     parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--max_nodes', type=int, default=6)
+    parser.add_argument('--max_faces', type=int, default=4)
     parser.add_argument('--iteration', type=int, default=100000)
     parser.add_argument('--lr', type=float, default=5e-6)
     parser.add_argument('--lambda_ws', type=float, default=0.08)
@@ -872,7 +1122,17 @@ def main():
     parser.add_argument('--face_start', type=int, default=12000)      # face coverage 開始步
     parser.add_argument('--face_warmup', type=int, default=5000)
     parser.add_argument('--lambda_style', type=float, default=30.0)   # 你前面 style_loss *150 太兇，改成可調
+    parser.add_argument('--layout_template', type=str, default='center_vertical',
+                        choices=['top_hero', 'center_vertical', 'right_column', 'bottom_caption'])
+    parser.add_argument('--lambda_template', type=float, default=20.0)
+    parser.add_argument('--template_start', type=int, default=3000)
+    parser.add_argument('--template_warmup', type=int, default=4000)
+    parser.add_argument('--lambda_space', type=float, default=10.0)    # local spacing：避免元素彼此太貼近
+    parser.add_argument('--space_min_gap', type=float, default=0.04)   # 期望最小間距
+    parser.add_argument('--space_start', type=int, default=5000)
+    parser.add_argument('--space_warmup', type=int, default=5000)
     parser.add_argument('--fix_aspect', type=int, default=1)           # 1=固定長寬比(只等比縮放), 0=不啟用
+    parser.add_argument('--fix_text_aspect', type=int, default=0)      # 0=不要把文字框長寬比硬拉回 GT
     parser.add_argument('--ws_style_mode', type=str, default='random', choices=['max','random'])  # 留白風格選擇方式
     parser.add_argument('--fix_img_prob', type=float, default=0.0)     # 以機率將 Image(以及 Face) 固定到 GT (0~1)
     parser.add_argument('--freeze_face', type=int, default=1)        # 1=Face永遠用GT(不讓模型猜), 0=關閉
@@ -883,7 +1143,7 @@ def main():
     parser.add_argument('--vis_every', type=int, default=1000)
     parser.add_argument('--seed', type=int, default=None)
     parser.add_argument('--num_workers', type=int, default=4)
-    parser.add_argument('--fixed_sample', type=str, default='fixed_sample_v47.pt') # 確保檔名正確
+    parser.add_argument('--fixed_sample', type=str, default='fixed_sample_v48_n6.pt') # 確保檔名正確
     parser.add_argument('--eval_every', type=int, default=10000)
     parser.add_argument('--G_d_model', type=int, default=256)
     parser.add_argument('--G_nhead', type=int, default=4)
@@ -914,21 +1174,59 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 資料載入
-    # 1. 獲取原始 dataset
-    train_dataset = get_dataset(args.dataset, 'train')
-    
-    # 2. 如果有生成的 pkl 資料，重新封裝
-    pkl_path = "/home/albee/const_layout_whitespace/data/dataset/crello/crello_train_ws_gt0.6_with_face.pkl"
-    if os.path.exists(pkl_path):
-        with open(pkl_path, 'rb') as f: 
-            high_quality_data = pickle.load(f)
-        train_dataset = RawLayoutDataset(
-            high_quality_data,
-            num_classes=train_dataset.num_classes,
-            colors=train_dataset.colors,
+    base_dataset = get_dataset(args.dataset, 'train')
+
+    def _build_raw_dataset_from_pkl(pkl_path: str):
+        with open(pkl_path, 'rb') as f:
+            data_list = pickle.load(f)
+        return RawLayoutDataset(
+            data_list,
+            num_classes=base_dataset.num_classes,
+            max_nodes=args.max_nodes,
+            max_faces=args.max_faces,
+            colors=base_dataset.colors,
             aug_hflip=args.aug_flip,
             aug_vflip=args.aug_vflip,
             flip_prob=args.flip_prob,
+        )
+
+    # 預設沿用原本單一資料集行為
+    train_dataset = base_dataset
+
+    # 固定三個 pkl 路徑；下參數時只需要給權重
+    fixed_mix_pkls = [
+        PKL_PATH_CRELLO_FULL,
+        PKL_PATH_HIGH_QUALITY,
+        PKL_PATH_WS_60,
+    ]
+
+    if len(args.mix_weights) != 3:
+        raise ValueError(f'--mix_weights 必須剛好給 3 個值，目前收到 {len(args.mix_weights)} 個')
+
+    if args.single_pkl == 1:
+        pkl_path = PKL_PATH_WS_60
+        if not os.path.exists(pkl_path):
+            raise FileNotFoundError(f'找不到 pkl: {pkl_path}')
+        train_dataset = _build_raw_dataset_from_pkl(pkl_path)
+        print(f"[Single PKL] loaded: {pkl_path} (n={len(train_dataset)})")
+    else:
+        mixed_datasets = []
+        for pkl_path in fixed_mix_pkls:
+            if not os.path.exists(pkl_path):
+                raise FileNotFoundError(f'找不到 pkl: {pkl_path}')
+            ds = _build_raw_dataset_from_pkl(pkl_path)
+            mixed_datasets.append(ds)
+            print(f"[MIX] loaded: {pkl_path} (n={len(ds)})")
+
+        train_dataset = WeightedMixedRawDataset(
+            mixed_datasets,
+            source_weights=args.mix_weights,
+            epoch_size=args.mix_epoch_size,
+            seed=args.seed,
+        )
+        print(
+            f"[MIX] pkl order=[crello.pkl, high_quality.pkl, crello_train_ws_gt0.6_with_face.pkl] "
+            f"weights={train_dataset.source_weights.tolist()} epoch_size={len(train_dataset)}"
         )
     
     # 強制使用標準 RGB 整數，解決 TypeError
@@ -1003,7 +1301,7 @@ def main():
 
     
     # === 固定樣本載入：建議使用含 pos 的 fixed_sample_v46.pt ===
-    fixed_path = 'fixed_sample_v47.pt'
+    fixed_path = 'fixed_sample_v48_n6.pt'
     if not os.path.exists(fixed_path):
         print(f"致命錯誤：找不到 {fixed_path}。請先用 make_fixed_sample_v47.py 產生。")
         exit()
@@ -1054,9 +1352,10 @@ def main():
             bbox_fake = torch.clamp(netG(z, label, padding_mask), 0, 1)
             # --- (2) 固定元素長寬比：只允許等比例縮放（避免元素被壓成細條） ---：只允許等比例縮放（避免元素被壓成細條） ---
             if args.fix_aspect:
+                aspect_target_ids = (SVG_ID, IMG_ID) if not args.fix_text_aspect else (SVG_ID, TEXT_ID, IMG_ID)
                 bbox_fake = project_fixed_aspect_scale(
                     bbox_fake, bbox_real, label, padding_mask,
-                    target_ids=(SVG_ID, TEXT_ID, IMG_ID),
+                    target_ids=aspect_target_ids,
                 )
             # --- (HARD) Face 與 Image 硬耦合：Face token 只輸出相對參數，Face bbox 由對應 Image 推導 ---
             # 注意：需要 face2img (dataset 產生) 來指定每張臉屬於哪張 image
@@ -1098,7 +1397,18 @@ def main():
             valid_mask = layout_valid
             B = label.size(0)
             # 0: frame / 1: side / 2: top-bottom / 3: corner(hybrid)
-            style_tags = torch.randint(0, 4, (B,), device=device)
+            style_map = {
+                'top_hero': 2,
+                'center_vertical': 0,
+                'right_column': 1,
+                'bottom_caption': 2,
+            }
+            style_tags = torch.full(
+                (B,),
+                style_map[args.layout_template],
+                device=device,
+                dtype=torch.long,
+            )
 
             # style loss warmup：先讓 G 學會基本布局(不重疊/不崩壞)再開始強推風格
             curr_lambda_style = args.lambda_style * min(1.0, max(0.0, (iteration - 5000) / 5000.0))
@@ -1108,19 +1418,63 @@ def main():
                     label,
                     padding_layout,
                     wr_min=args.wr_min,
-                    style_mode="random",
+                    style_mode=args.ws_style_mode,
                     style_tags=style_tags,
                 )
                 loss_G += (loss_style * curr_lambda_style)
+
+            curr_lambda_template = args.lambda_template * min(
+                1.0,
+                max(0.0, (iteration - args.template_start) / max(1.0, float(args.template_warmup)))
+            )
+            if curr_lambda_template > 0:
+                loss_G += poster_template_loss(
+                    bbox_fake,
+                    label,
+                    padding_layout,
+                    template=args.layout_template,
+                    lambda_template=curr_lambda_template,
+                )
+
+            curr_lambda_space = args.lambda_space * min(1.0, max(0.0, (iteration - args.space_start) / max(1.0, float(args.space_warmup))))
+            if curr_lambda_space > 0:
+                loss_G += local_spacing_loss(
+                    bbox_fake,
+                    label,
+                    padding_layout,
+                    min_gap=args.space_min_gap,
+                ) * curr_lambda_space
+
             # --- [對齊 loss：避免用 std 造成塌縮，改用 grid 吸附(只對非 face 元件)] ---
             curr_lambda_align = args.lambda_align * min(1.0, max(0.0, (iteration - args.align_start) / max(1.0, float(args.align_warmup))))
             if curr_lambda_align > 0:
+                if args.layout_template == 'center_vertical':
+                    gx = [0.50]
+                    gy = [0.08, 0.18, 0.30, 0.44, 0.58, 0.72, 0.86]
+                    ew, cw = 0.5, 2.0
+                elif args.layout_template == 'right_column':
+                    gx = [0.64, 0.76, 0.88]
+                    gy = [0.10, 0.22, 0.36, 0.52, 0.70, 0.86]
+                    ew, cw = 1.0, 1.5
+                elif args.layout_template == 'top_hero':
+                    gx = [0.18, 0.50, 0.82]
+                    gy = [0.10, 0.18, 0.42, 0.62, 0.82]
+                    ew, cw = 0.8, 1.2
+                else:  # bottom_caption
+                    gx = [0.10, 0.50, 0.90]
+                    gy = [0.12, 0.28, 0.48, 0.72, 0.84, 0.92]
+                    ew, cw = 0.8, 1.2
+
                 loss_G += grid_alignment_loss_xy(
                     bbox_fake,
                     label,
                     padding_layout,
                     lambda_grid=curr_lambda_align,
-                    target_ids=(SVG_ID, TEXT_ID, IMG_ID),
+                    target_ids=(TEXT_ID, IMG_ID),
+                    grid_x=gx,
+                    grid_y=gy,
+                    edge_weight=ew,
+                    center_weight=cw,
                 )
             # 4. [圖片面積與形狀保護]
             img_mask = (label == IMG_ID) & valid_mask
@@ -1131,15 +1485,24 @@ def main():
 
             text_mask = (label == TEXT_ID) & valid_mask
             if text_mask.any():
-                # 文字寬度保護，防止變成細線
-                loss_text_width = torch.relu(0.25 - bbox_fake[text_mask][:, 2]).mean()
-                loss_G += (loss_text_width * 100.0)
+                text_w = bbox_fake[text_mask][:, 2]
+
+                # 不要太窄
+                loss_text_too_narrow = torch.relu(0.12 - text_w)
+
+                # 不要太寬：top_hero 允許更寬的大標，其他模板仍然偏向窄長文字條
+                max_text_w = 0.75 if args.layout_template == 'top_hero' else 0.50
+                loss_text_too_wide = torch.relu(text_w - max_text_w)
+
+                # 寬度落在中間區間最好
+                loss_text_width = loss_text_too_narrow.mean() * 35.0 + loss_text_too_wide.mean() * 120.0
+                loss_G += loss_text_width
 
             # 5. [其餘幾何損失加總]
             fake_wh = bbox_fake[valid_mask][:, 2:]
             aspect_ratio = fake_wh[:, 0] / (fake_wh[:, 1] + 1e-6)
             loss_aspect = (torch.relu(aspect_ratio - 8.0) + torch.relu(0.125 - aspect_ratio)).mean()
-            loss_min_size = torch.relu(0.05 - (fake_wh[:, 0] * fake_wh[:, 1])).mean()
+            loss_min_size = torch.relu(0.02 - (fake_wh[:, 0] * fake_wh[:, 1])).mean()
             curr_lambda_ov = min(args.lambda_ov, args.lambda_ov * (iteration / 5000.0))
 
             curr_lambda_face = args.lambda_face * min(1.0, max(0.0, (iteration - args.face_start) / max(1.0, float(args.face_warmup))))
@@ -1178,7 +1541,7 @@ def main():
                     w.writerow([iteration, float(occ_ratio_mean.item()), float(occ_rate.item()), n_face, n_occ])
 
                 print(f'[{iteration}] Loss_D: {loss_D.item():.4f} Loss_G: {loss_G.item():.4f} '
-                      f'STYLE:{curr_lambda_style:.3f} OV:{curr_lambda_ov:.3f} ALIGN:{curr_lambda_align:.3f} '
+                      f'STYLE:{curr_lambda_style:.3f} SPACE:{curr_lambda_space:.3f} OV:{curr_lambda_ov:.3f} ALIGN:{curr_lambda_align:.3f} '
                       f'FACE:{curr_lambda_face:.3f} CONT:{curr_lambda_cont:.1f} ANCH:{curr_lambda_anchor:.1f} '
                       f'OCC:{occ_ratio.item():.3f} OCC_RATE:{occ_rate.item():.2f}')
 
@@ -1191,22 +1554,23 @@ def main():
                     # 若 fixed_sample 有 pos，套用與訓練一致的 post-process（讓預覽更可信）
                     if fixed_pos is not None:
                         if args.fix_aspect:
+                            aspect_target_ids = (SVG_ID, IMG_ID) if not args.fix_text_aspect else (SVG_ID, TEXT_ID, IMG_ID)
                             bbox_vis = project_fixed_aspect_scale(
                                 bbox_vis, fixed_pos, fixed_label, fixed_padding,
-                                target_ids=(SVG_ID, TEXT_ID, IMG_ID),
+                                target_ids=aspect_target_ids,
                             )
 
                         # --- (HARD) VIS: Face 與 Image 硬耦合 (mapping 從 GT pos 推導) ---
                         fixed_face2img = infer_face2img_from_reference(
                             fixed_pos, fixed_label, fixed_padding,
-                            max_faces=4, contain_thr=0.98,
+                            max_faces=args.max_faces, contain_thr=0.98,
                         )
                         # fixed_face_mask：用 label/valid 推估（最多 4 張）
-                        fixed_face_mask_vis = torch.zeros((fixed_label.size(0), 4), device=device, dtype=torch.bool)
+                        fixed_face_mask_vis = torch.zeros((fixed_label.size(0), args.max_faces), device=device, dtype=torch.bool)
                         vmask = ~fixed_padding
                         for bb in range(fixed_label.size(0)):
                             f_idx = torch.where((fixed_label[bb] == FACE_ID) & vmask[bb])[0]
-                            nf = min(int(f_idx.numel()), 4)
+                            nf = min(int(f_idx.numel()), args.max_faces)
                             if nf > 0:
                                 fixed_face_mask_vis[bb, :nf] = True
                         bbox_vis = hard_couple_faces_to_images(
