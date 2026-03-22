@@ -143,11 +143,11 @@ def main():
         z = torch.randn(label.size(0), label.size(1),
                         train_args['latent_size'],
                         device=device)
-
         z_hist = [z]
         for z in optimizer.generator(z, data):
             if len(results) < args.num_save:
                 z_hist.append(z)
+
 
         bbox = netG(z, label, padding_mask)
 
@@ -158,8 +158,11 @@ def main():
             v = compute_violation(bbox_flatten, data)
             violation += v[~v.isnan()].tolist()
 
+        """
         if len(results) < args.num_save:
-            bbox_init = netG(z_hist[0], label, padding_mask)
+            bbox_init = netG(z_hist[0], label, padding_mask
+            )
+        """
 
         for j in range(bbox.size(0)):
             mask_j = mask[j]
@@ -182,6 +185,7 @@ def main():
                 save_gif(out_path, j, netG,
                          z_hist, label, mask, padding_mask,
                          dataset.colors, (120, 80))
+
 
             results.append((b, l))
 
