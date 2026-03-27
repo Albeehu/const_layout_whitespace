@@ -1,5 +1,5 @@
 """用 train_fixed_v6_0.6pkl_v55 改 v56
-1.  content_region_loss 改成不回傳梯度
+1. face 固定比例縮放 不變形
 """
 import os
 import csv
@@ -700,28 +700,28 @@ def get_stage_loss_multipliers(stage: str):
             'style': 0.0, 'template': 0.0, 'space': 0.0, 'align': 0.0,
             'text_width': 0.0, 'text_geom': 0.0, 'img_geom': 0.0,
             'shape_prior': 0.0, 'role_layout': 0.0, 'region': 0.0,
-            'face': 0.0, 'cont': 0.0, 'anchor': 0.0,
+            'fg_area': 0.0, 'face': 0.0, 'cont': 0.0, 'anchor': 0.0,
         }
     if stage == 'text':
         return {
             'style': 0.0, 'template': 0.0, 'space': 0.0, 'align': 0.0,
             'text_width': 1.0, 'text_geom': 1.0, 'img_geom': 0.0,
             'shape_prior': 0.0, 'role_layout': 0.0, 'region': 0.0,
-            'face': 0.0, 'cont': 0.0, 'anchor': 0.0,
+            'fg_area': 0.0, 'face': 0.0, 'cont': 0.0, 'anchor': 0.0,
         }
     if stage == 'text_image':
         return {
             'style': 0.0, 'template': 0.0, 'space': 0.0, 'align': 0.0,
             'text_width': 1.0, 'text_geom': 1.0, 'img_geom': 1.0,
             'shape_prior': 0.5, 'role_layout': 0.0, 'region': 0.0,
-            'face': 0.0, 'cont': 0.0, 'anchor': 0.0,
+            'fg_area': 0.5, 'face': 0.0, 'cont': 0.0, 'anchor': 0.0,
         }
     if stage == 'full':
         return {
             'style': 1.0, 'template': 1.0, 'space': 1.0, 'align': 1.0,
             'text_width': 1.0, 'text_geom': 1.0, 'img_geom': 1.0,
             'shape_prior': 1.0, 'role_layout': 1.0, 'region': 1.0,
-            'face': 1.0, 'cont': 1.0, 'anchor': 1.0,
+            'fg_area': 1.0, 'face': 1.0, 'cont': 1.0, 'anchor': 1.0,
         }
     raise ValueError(f'unknown train_stage: {stage}')
 
@@ -1535,7 +1535,7 @@ def content_region_loss(
 
         count = valid.sum().float()
         area_sum = (boxes[:, 2].clamp(min=0.0) * boxes[:, 3].clamp(min=0.0)).sum()
-        area_term = torch.sqrt(area_sum.clamp(min=1e-8)) #area_sum 是二維量，union 的寬高是一維量，開根號後尺度比較合理，不會一下子放太鬆
+        area_term = torch.sqrt(area_sum.detach().clamp(min=1e-8)) # area 只做 forward 的動態估計，不讓模型靠放大元素把 target 一起撐大
 
         target_w = cfg["base_w"] + cfg["count_w"] * (count - 1.0) + cfg["area_w"] * area_term
         target_h = cfg["base_h"] + cfg["count_h"] * (count - 1.0) + cfg["area_h"] * area_term
@@ -1579,6 +1579,42 @@ def content_region_loss(
         return torch.tensor(0.0, device=device)
     return lambda_region * torch.stack(losses).mean()
 
+
+
+
+def total_foreground_area_loss(
+    bbox_fake: torch.Tensor,
+    label: torch.Tensor,
+    padding_layout: torch.Tensor,
+    max_fg_area: float = 0.38,
+    lambda_fg: float = 10.0,
+):
+    """Penalize overly full layouts by limiting total foreground area.
+
+    目的：
+      - content_region_loss 仍可依 count + area_sum 動態決定合理 union 大小
+      - 但避免模型把所有元素一起放大，導致整體前景面積過滿
+
+    注意：
+      - 這裡使用所有前景元素面積總和（不是 union area）
+      - 只對超過 max_fg_area 的部分做 ReLU 懲罰
+    """
+    device = bbox_fake.device
+    losses = []
+
+    for b in range(bbox_fake.size(0)):
+        valid = ~padding_layout[b]
+        valid = _content_valid_mask(label[b], valid)
+        if valid.sum() == 0:
+            continue
+
+        boxes = bbox_fake[b][valid]
+        area_sum = (boxes[:, 2].clamp(min=0.0) * boxes[:, 3].clamp(min=0.0)).sum()
+        losses.append(torch.relu(area_sum - max_fg_area))
+
+    if not losses:
+        return torch.tensor(0.0, device=device)
+    return lambda_fg * torch.stack(losses).mean()
 
 
 def content_union_stats(
@@ -1764,6 +1800,10 @@ def main():
     parser.add_argument('--region_warmup', type=int, default=4000)
     parser.add_argument('--region_center_weight', type=float, default=1.0)
     parser.add_argument('--region_compact_weight', type=float, default=1.0)
+    parser.add_argument('--lambda_fg_area', type=float, default=10.0)
+    parser.add_argument('--max_fg_area', type=float, default=0.38)
+    parser.add_argument('--fg_area_start', type=int, default=2000)
+    parser.add_argument('--fg_area_warmup', type=int, default=4000)
     parser.add_argument('--role_layout_start', type=int, default=5000)
     parser.add_argument('--role_layout_warmup', type=int, default=4000)
     parser.add_argument('--fix_aspect', type=int, default=1)           # 1=固定長寬比(只等比縮放), 0=不啟用
@@ -2131,6 +2171,9 @@ def main():
             curr_lambda_region = get_curr_lambda(
                 args.lambda_region * stage_mult['region'], iteration, args.region_start, args.region_warmup
             )
+            curr_lambda_fg_area = get_curr_lambda(
+                args.lambda_fg_area * stage_mult['fg_area'], iteration, args.fg_area_start, args.fg_area_warmup
+            )
 
             loss_text_width = torch.tensor(0.0, device=device)
             loss_text_geom = torch.tensor(0.0, device=device)
@@ -2138,6 +2181,7 @@ def main():
             loss_shape_prior = torch.tensor(0.0, device=device)
             loss_role_layout = torch.tensor(0.0, device=device)
             loss_region = torch.tensor(0.0, device=device)
+            loss_fg_area = torch.tensor(0.0, device=device)
             max_text_w = args.text_max_w_top_hero if args.layout_template == 'top_hero' else args.text_max_w
             if curr_lambda_text_width > 0:
                 loss_text_width = text_width_regularizer(
@@ -2210,6 +2254,16 @@ def main():
                 )
                 loss_G += loss_region
 
+            if curr_lambda_fg_area > 0:
+                loss_fg_area = total_foreground_area_loss(
+                    bbox_fake,
+                    label,
+                    padding_layout,
+                    max_fg_area=args.max_fg_area,
+                    lambda_fg=curr_lambda_fg_area,
+                )
+                loss_G += loss_fg_area
+
             # 5. [其餘幾何損失加總]
             fake_wh = bbox_fake[valid_mask][:, 2:]
             aspect_ratio = fake_wh[:, 0] / (fake_wh[:, 1] + 1e-6)
@@ -2256,7 +2310,7 @@ def main():
                     w.writerow([iteration, float(occ_ratio_mean.item()), float(occ_rate.item()), n_face, n_occ])
 
                 print(f'[{iteration}] Loss_D: {loss_D.item():.4f} Loss_G: {loss_G.item():.4f} '
-                      f'STYLE:{curr_lambda_style:.3f} SPACE:{curr_lambda_space:.3f} REGION:{loss_region.item():.3f} TXTW:{(curr_lambda_text_width * loss_text_width).item():.3f} '
+                      f'STYLE:{curr_lambda_style:.3f} SPACE:{curr_lambda_space:.3f} REGION:{loss_region.item():.3f} FG:{loss_fg_area.item():.3f} TXTW:{(curr_lambda_text_width * loss_text_width).item():.3f} '
                       f'TGEO:{(curr_lambda_text_geom * loss_text_geom).item():.3f} IGEO:{(curr_lambda_img_geom * loss_img_geom).item():.3f} '
                       f'SHAPE:{(curr_lambda_shape_prior * loss_shape_prior).item():.3f} ROLE:{(curr_lambda_role_layout * loss_role_layout).item():.3f} '
                       f'OV:{curr_lambda_ov:.3f} ALIGN:{curr_lambda_align:.3f} '
