@@ -1,0 +1,31 @@
+=== improved_top ===
+num_layouts=200 num_faces=200
+layout_mean_maxIoU=0.1821
+layout_mean_meanCov=0.0110
+layout_mean_maxCov=0.0110
+layout_anyCover_ratio=0.0450
+face_cover_gt0_ratio=0.0450
+face_cover_gt005_ratio=0.0400
+face_cover_gt010_ratio=0.0300
+face_mean_coverage=0.0110
+
+=== baseline_top ===
+num_layouts=200 num_faces=200
+layout_mean_maxIoU=0.1910
+layout_mean_meanCov=0.0385
+layout_mean_maxCov=0.0385
+layout_anyCover_ratio=0.1950
+face_cover_gt0_ratio=0.1950
+face_cover_gt005_ratio=0.1450
+face_cover_gt010_ratio=0.1200
+face_mean_coverage=0.0385
+
+=== improved_top minus baseline_top ===
+layout_mean_maxIoU: -0.008926168233156229
+layout_mean_meanCov: -0.027528984175878575
+layout_mean_maxCov: -0.027528984175878575
+layout_anyCover_ratio: -0.15000000000000002
+face_cover_gt0_ratio: -0.15000000000000002
+face_cover_gt005_ratio: -0.10499999999999998
+face_cover_gt010_ratio: -0.09
+face_mean_coverage: -0.027528984175878575

@@ -4,7 +4,7 @@
 """
 debug_face.py (single-checkpoint sanity generator + ID overlay)
 
-✅ Works with your setup:
+Works with your setup:
 - CrelloDataset returns torch_geometric.data.Data
 - Generator (model/layoutganpp.py) uses nn.Embedding(label) => label MUST be Long indices
 - Saves PNGs + metrics.json

@@ -1,5 +1,6 @@
 """用 train_fixed_v6_0.6pkl_v55 改 v56
 1. face 固定比例縮放 不變形
+成功的train.py 不能刪！！
 """
 import os
 import csv
