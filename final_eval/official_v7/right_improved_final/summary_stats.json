@@ -1,0 +1,12 @@
+{
+  "num_layouts": 200,
+  "num_faces": 200,
+  "layout_mean_maxIoU": 0.0008636904878738254,
+  "layout_mean_meanCov": 0.005482768124865223,
+  "layout_mean_maxCov": 0.005482768124865223,
+  "layout_anyCover_ratio": 0.025,
+  "face_cover_gt0_ratio": 0.025,
+  "face_cover_gt005_ratio": 0.02,
+  "face_cover_gt010_ratio": 0.015,
+  "face_mean_coverage": 0.005482768124865223
+}

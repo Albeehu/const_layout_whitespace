@@ -1,0 +1,10 @@
+=== improved_right ===
+num_layouts=200 num_faces=200
+layout_mean_maxIoU=0.0185646342
+layout_mean_meanCov=0.0428880585
+layout_mean_maxCov=0.0428880585
+layout_anyCover_ratio=0.2200000000
+face_cover_gt0_ratio=0.2200000000
+face_cover_gt005_ratio=0.1750000000
+face_cover_gt010_ratio=0.1150000000
+face_mean_coverage=0.0428880585

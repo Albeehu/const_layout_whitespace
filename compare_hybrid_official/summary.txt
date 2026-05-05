@@ -1,31 +1,31 @@
 === improved_hybrid ===
 num_layouts=200 num_faces=200
-layout_mean_maxIoU=0.1680
-layout_mean_meanCov=0.0028
-layout_mean_maxCov=0.0028
-layout_anyCover_ratio=0.0100
-face_cover_gt0_ratio=0.0100
-face_cover_gt005_ratio=0.0100
-face_cover_gt010_ratio=0.0100
-face_mean_coverage=0.0028
+layout_mean_maxIoU=0.1537
+layout_mean_meanCov=0.0031
+layout_mean_maxCov=0.0031
+layout_anyCover_ratio=0.0250
+face_cover_gt0_ratio=0.0250
+face_cover_gt005_ratio=0.0200
+face_cover_gt010_ratio=0.0200
+face_mean_coverage=0.0031
 
 === baseline_hybrid ===
 num_layouts=200 num_faces=200
-layout_mean_maxIoU=0.1971
-layout_mean_meanCov=0.0888
-layout_mean_maxCov=0.0888
-layout_anyCover_ratio=0.3100
-face_cover_gt0_ratio=0.3100
-face_cover_gt005_ratio=0.2450
-face_cover_gt010_ratio=0.2150
-face_mean_coverage=0.0888
+layout_mean_maxIoU=0.1767
+layout_mean_meanCov=0.0474
+layout_mean_maxCov=0.0474
+layout_anyCover_ratio=0.1750
+face_cover_gt0_ratio=0.1750
+face_cover_gt005_ratio=0.1650
+face_cover_gt010_ratio=0.1150
+face_mean_coverage=0.0474
 
 === improved_hybrid minus baseline_hybrid ===
-layout_mean_maxIoU: -0.02905443187803028
-layout_mean_meanCov: -0.08596943497366737
-layout_mean_maxCov: -0.08596943497366737
-layout_anyCover_ratio: -0.3
-face_cover_gt0_ratio: -0.3
-face_cover_gt005_ratio: -0.235
-face_cover_gt010_ratio: -0.205
-face_mean_coverage: -0.08596943497366737
+layout_mean_maxIoU: -0.022926826030015945
+layout_mean_meanCov: -0.04425424947956344
+layout_mean_maxCov: -0.04425424947956344
+layout_anyCover_ratio: -0.15
+face_cover_gt0_ratio: -0.15
+face_cover_gt005_ratio: -0.14500000000000002
+face_cover_gt010_ratio: -0.095
+face_mean_coverage: -0.04425424947956344
