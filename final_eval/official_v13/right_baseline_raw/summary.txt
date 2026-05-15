@@ -1,0 +1,10 @@
+=== baseline_right_raw ===
+num_layouts=200 num_faces=200
+layout_mean_maxIoU=0.0464148370
+layout_mean_meanCov=0.1044995992
+layout_mean_maxCov=0.1044995992
+layout_anyCover_ratio=0.3400000000
+face_cover_gt0_ratio=0.3400000000
+face_cover_gt005_ratio=0.2900000000
+face_cover_gt010_ratio=0.2800000000
+face_mean_coverage=0.1044995992

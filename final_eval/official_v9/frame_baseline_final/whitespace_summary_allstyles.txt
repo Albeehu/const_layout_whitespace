@@ -1,0 +1,20 @@
+=== baseline_frame_final ===
+num_layouts=200
+mean_WR=0.8904238892
+mean_LWR=0.8904238892
+mean_DWS=0.3065645401
+mean_DWS_max=0.4334795700
+mean_S_frame=0.1496090169
+mean_S_side=0.4333447361
+mean_S_tb=0.2896397256
+mean_S_corner=0.3536646956
+mean_S_style=0.3065645436
+mean_S_max=0.4334795749
+mean_L=0.3724944276
+mean_R=0.3766995692
+mean_T=0.1943982371
+mean_B=0.1941340545
+ratio_frame=0.0000000000
+ratio_side=0.9950000000
+ratio_tb=0.0050000000
+ratio_corner=0.0000000000

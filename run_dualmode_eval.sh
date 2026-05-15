@@ -3,9 +3,9 @@
 set -euo pipefail
 
 ROOT=/home/albee/const_layout_whitespace
-INFER=/home/albee/const_layout_whitespace/infer_official_face_v6.py
-WS=/home/albee/const_layout_whitespace/whitespace_metric_v5.py
-OUT_ROOT=${ROOT}/final_eval/official_infer_dualmode
+INFER=/home/albee/const_layout_whitespace/infer_official_face_v12.py
+WS=/home/albee/const_layout_whitespace/whitespace_metric_v10.py
+OUT_ROOT=${ROOT}/final_eval/official_v15
 
 N=200
 K_FINAL=64

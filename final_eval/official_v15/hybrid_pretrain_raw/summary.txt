@@ -1,0 +1,10 @@
+=== pretrain_hybrid_raw ===
+num_layouts=200 num_faces=200
+layout_mean_maxIoU=0.2648206801
+layout_mean_meanCov=0.8618458903
+layout_mean_maxCov=0.8618458903
+layout_anyCover_ratio=1.0000000000
+face_cover_gt0_ratio=1.0000000000
+face_cover_gt005_ratio=1.0000000000
+face_cover_gt010_ratio=1.0000000000
+face_mean_coverage=0.8618458903

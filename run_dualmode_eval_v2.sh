@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT=/home/albee/const_layout_whitespace
-INFER=/home/albee/const_layout_whitespace/infer_official_face_v6.py
+INFER=/home/albee/const_layout_whitespace/infer_official_face_v7.py
 WS=/home/albee/const_layout_whitespace/whitespace_metric_v6.py
 OUT_ROOT=${ROOT}/final_eval/official_v7
 

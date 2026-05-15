@@ -1,0 +1,20 @@
+=== baseline_hybrid_final ===
+num_layouts=200
+mean_WR=0.8633432007
+mean_LWR=0.8633432007
+mean_DWS=0.5374186230
+mean_DWS_max=0.8007079160
+mean_S_frame=0.2169638703
+mean_S_side=0.6152856543
+mean_S_tb=0.6918198785
+mean_S_corner=0.6256051139
+mean_S_style=0.5374186292
+mean_S_max=0.8007079253
+mean_L=0.2567555696
+mean_R=0.1871559629
+mean_T=0.1607988355
+mean_B=0.3767036994
+ratio_frame=0.0000000000
+ratio_side=0.4550000000
+ratio_tb=0.5450000000
+ratio_corner=0.0000000000
