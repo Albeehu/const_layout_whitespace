@@ -1,0 +1,10 @@
+=== pretrain_frame_raw ===
+num_layouts=5 num_faces=15
+layout_mean_maxIoU=0.2303693420
+layout_mean_meanCov=0.9817106531
+layout_mean_maxCov=1.0000000000
+layout_anyCover_ratio=1.0000000000
+face_cover_gt0_ratio=1.0000000000
+face_cover_gt005_ratio=1.0000000000
+face_cover_gt010_ratio=1.0000000000
+face_mean_coverage=0.9817106531

@@ -1,0 +1,10 @@
+=== improved_frame_raw ===
+num_layouts=5 num_faces=10
+layout_mean_maxIoU=0.1994087070
+layout_mean_meanCov=0.7244155204
+layout_mean_maxCov=0.7928161305
+layout_anyCover_ratio=1.0000000000
+face_cover_gt0_ratio=1.0000000000
+face_cover_gt005_ratio=1.0000000000
+face_cover_gt010_ratio=1.0000000000
+face_mean_coverage=0.7244155204

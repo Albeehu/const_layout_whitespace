@@ -17,6 +17,11 @@ ROOT=/home/albee/const_layout_whitespace
 INFER=${ROOT}/infer_official_face_v13.py
 WS=${ROOT}/whitespace_metric_v10.py
 OUT_ROOT=${ROOT}/final_eval/official_v15
+IMAGE_PATH=${ROOT}/user_images/test.jpg
+FACE_MODEL=${ROOT}/yolov8n-face.pt
+FACE_CONF=0.3
+MAX_DETECTED_FACES=1
+
 
 N=200
 K_FINAL=64

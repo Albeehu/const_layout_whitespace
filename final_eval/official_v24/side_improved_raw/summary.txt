@@ -1,0 +1,10 @@
+=== improved_side_raw ===
+num_layouts=5 num_faces=10
+layout_mean_maxIoU=0.0222440599
+layout_mean_meanCov=0.0394604094
+layout_mean_maxCov=0.0789208189
+layout_anyCover_ratio=0.6000000000
+face_cover_gt0_ratio=0.3000000000
+face_cover_gt005_ratio=0.2000000000
+face_cover_gt010_ratio=0.2000000000
+face_mean_coverage=0.0394604094
