@@ -1,6 +1,6 @@
 {
   "num_layouts": 200,
-  "num_faces": 0,
+  "num_faces": 200,
   "layout_mean_maxIoU": 0.0,
   "layout_mean_meanCov": 0.0,
   "layout_mean_maxCov": 0.0,

@@ -1,0 +1,10 @@
+=== pretrain_tb_raw ===
+num_layouts=200 num_faces=200
+layout_mean_maxIoU=0.0944442955
+layout_mean_meanCov=0.6117594924
+layout_mean_maxCov=0.6117594924
+layout_anyCover_ratio=0.9100000000
+face_cover_gt0_ratio=0.9100000000
+face_cover_gt005_ratio=0.8750000000
+face_cover_gt010_ratio=0.8500000000
+face_mean_coverage=0.6117594924

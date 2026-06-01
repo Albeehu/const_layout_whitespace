@@ -1,12 +1,12 @@
 {
   "num_layouts": 200,
-  "num_faces": 0,
-  "layout_mean_maxIoU": 0.0,
-  "layout_mean_meanCov": 0.0,
-  "layout_mean_maxCov": 0.0,
-  "layout_anyCover_ratio": 0.0,
-  "face_cover_gt0_ratio": 0.0,
-  "face_cover_gt005_ratio": 0.0,
-  "face_cover_gt010_ratio": 0.0,
-  "face_mean_coverage": 0.0
+  "num_faces": 200,
+  "layout_mean_maxIoU": 0.040256239761535494,
+  "layout_mean_meanCov": 0.11838451291813058,
+  "layout_mean_maxCov": 0.11838451291813058,
+  "layout_anyCover_ratio": 0.265,
+  "face_cover_gt0_ratio": 0.265,
+  "face_cover_gt005_ratio": 0.24,
+  "face_cover_gt010_ratio": 0.215,
+  "face_mean_coverage": 0.11838451291813058
 }

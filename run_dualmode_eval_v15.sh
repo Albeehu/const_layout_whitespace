@@ -16,7 +16,7 @@ ROOT=/home/albee/const_layout_whitespace
 
 INFER=${ROOT}/infer_official_face_v23.py
 WS=${ROOT}/whitespace_metric_v10.py
-OUT_ROOT=${ROOT}/final_eval/test
+OUT_ROOT=${ROOT}/final_eval/official_v29
 
 # =========================
 # Basic inference settings
@@ -39,7 +39,7 @@ SVG_SMALL_PROB=0.72
 # 2 = image
 # 5 = face（不要手動寫進 CUSTOM_LABELS）
 # =========================
-CUSTOM_LABELS=(0 1 1 2)
+CUSTOM_LABELS=(0 1 1 1 1 1 2)
 
 # =========================
 # Multi-image input
@@ -47,7 +47,7 @@ CUSTOM_LABELS=(0 1 1 2)
 # 若 image box 比圖片多，會循環使用圖片
 # =========================
 IMAGE_PATHS=(
-  "${ROOT}/user_images/000.png"
+  "${ROOT}/user_images/side.png"
   
  
 )
@@ -65,7 +65,7 @@ DEFAULT_SVG_ASPECTS=(1.0 1.4 0.75)
 # =========================
 FACE_MODEL=${ROOT}/yolov8n-face.pt
 FACE_CONF=0.3
-MAX_DETECTED_FACES=1
+MAX_DETECTED_FACES=5
 PRESERVE_IMAGE_ASPECT=1
 PRESERVE_SVG_ASPECT=0
 SVG_ROLE_AFFECTS_SIZE=0

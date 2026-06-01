@@ -1,10 +1,10 @@
 === improved_side_raw ===
-num_layouts=200 num_faces=0
-layout_mean_maxIoU=0.0000000000
-layout_mean_meanCov=0.0000000000
-layout_mean_maxCov=0.0000000000
-layout_anyCover_ratio=0.0000000000
-face_cover_gt0_ratio=0.0000000000
-face_cover_gt005_ratio=0.0000000000
-face_cover_gt010_ratio=0.0000000000
-face_mean_coverage=0.0000000000
+num_layouts=200 num_faces=200
+layout_mean_maxIoU=0.0707501495
+layout_mean_meanCov=0.1938583411
+layout_mean_maxCov=0.1938583411
+layout_anyCover_ratio=0.4850000000
+face_cover_gt0_ratio=0.4850000000
+face_cover_gt005_ratio=0.4150000000
+face_cover_gt010_ratio=0.3700000000
+face_mean_coverage=0.1938583411
